@@ -1,12 +1,11 @@
 "use client";
 
-// Evidence behind an answer: the deterministic variance computed by Trino and the maintenance logs
-// retrieved from pgvector with their mandatory metadata (Año, Mes, RCNTR).
+// Evidence behind an answer: the deterministic variance computed by Trino (actual vs base budget, with the
+// previous month as context) and the operational logs retrieved from pgvector with their mandatory
+// metadata (Año, Mes, RCNTR).
 import { formatMonth, formatNumber, formatPercent } from "../format";
 import { useI18n } from "../i18n";
 import type { Analysis, Metric, Source } from "../types";
-
-const DIGITS: Record<string, number> = { USD_H: 2, USD_T: 4 };
 
 function Row({ label, metric, digits }: { label: string; metric: Metric; digits: number }) {
   const { t } = useI18n();
@@ -15,10 +14,10 @@ function Row({ label, metric, digits }: { label: string; metric: Metric; digits:
     <tr className="border-b border-slate-900">
       <td className="py-1 pr-3 text-left text-slate-300">{label}</td>
       <td className="py-1 pr-3 font-semibold text-slate-50">{n(metric.current)}</td>
+      <td className="py-1 pr-3">{n(metric.budget)}</td>
+      <td className="py-1 pr-3">{formatPercent(metric.delta_budget_pct, t.locale)}</td>
       <td className="py-1 pr-3">{n(metric.previous)}</td>
       <td className="py-1 pr-3">{formatPercent(metric.delta_previous_pct, t.locale)}</td>
-      <td className="py-1 pr-3">{n(metric.baseline)}</td>
-      <td className="py-1 pr-3">{formatPercent(metric.delta_baseline_pct, t.locale)}</td>
       <td className="py-1">{metric.share_pct === null ? "" : `${formatNumber(metric.share_pct, t.locale, 1)} %`}</td>
     </tr>
   );
@@ -34,16 +33,20 @@ export function AnalysisTable({ analysis }: { analysis: Analysis }) {
           <tr className="border-b border-slate-800">
             <th className="py-1 pr-3 text-left font-medium">{t.analysis.metric}</th>
             <th className="py-1 pr-3 font-medium">{formatMonth(analysis.period, t.locale)}</th>
-            <th className="py-1 pr-3 font-medium">{t.analysis.previous}</th>
+            <th className="py-1 pr-3 font-medium">{t.analysis.budget} ({analysis.budget_category})</th>
             <th className="py-1 pr-3 font-medium">Δ</th>
-            <th className="py-1 pr-3 font-medium">{t.analysis.baseline}</th>
+            <th className="py-1 pr-3 font-medium">{t.analysis.previous}</th>
             <th className="py-1 pr-3 font-medium">Δ</th>
             <th className="py-1 font-medium">{t.analysis.share}</th>
           </tr>
         </thead>
         <tbody>
-          {Object.entries(analysis.totals).map(([key, metric]) => (
-            <Row key={key} label={t.analysis.metrics[key] ?? key} metric={metric!} digits={DIGITS[key] ?? 0} />
+          {analysis.opex ? <Row label={t.analysis.opex} metric={analysis.opex} digits={0} /> : null}
+          {analysis.drivers.map((driver) => (
+            <Row key={driver.stagr} label={`${driver.texts[language]} (${driver.symbol})`} metric={driver} digits={0} />
+          ))}
+          {analysis.unit_costs.map((unit) => (
+            <Row key={`unit-${unit.stagr}`} label={t.analysis.unit(unit.symbol)} metric={unit} digits={unit.decimals} />
           ))}
           {analysis.accounts.map((account) => (
             <Row key={account.racct} label={`${account.racct} ${account.texts[language]}`} metric={account} digits={0} />

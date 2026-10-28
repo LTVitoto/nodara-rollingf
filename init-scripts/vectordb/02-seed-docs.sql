@@ -3,8 +3,24 @@
 -- Embeddings stay NULL until the backend runs POST /api/v1/kb/embed (make embed).
 
 INSERT INTO kb.documents (doc_id, title, doc_type, author_role, site, language, classification, source_uri) VALUES
-    ('BIT-MANT-CAEX-2026-10', 'Bitácora del Jefe de Mantenimiento · Flota CAEX · octubre 2026', 'maintenance_log', 'Jefe de Mantenimiento Mina', 'Mina rajo abierto · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/mantenimiento/BIT-MANT-CAEX-2026-10.md');
+    ('BIT-MANT-CAEX-2026-10', 'Bitácora del Jefe de Mantenimiento · Flota CAEX · octubre 2026', 'maintenance_log', 'Jefe de Mantenimiento Mina', 'Mina rajo abierto · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/mantenimiento/BIT-MANT-CAEX-2026-10.md'),
+    ('BIT-MANT-SXEW-2026-10', 'Bitácora del Jefe de Mantenimiento · Planta de Lixiviación SX-EW · octubre 2026', 'maintenance_log', 'Jefe de Mantenimiento Planta SX-EW', 'Planta de Lixiviación SX-EW · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/mantenimiento/BIT-MANT-SXEW-2026-10.md'),
+    ('BIT-OPER-FLOT-2026-10', 'Bitácora del Jefe de Metalurgia · Planta Concentradora · octubre 2026', 'operations_log', 'Jefe de Metalurgia Planta Concentradora', 'Planta Concentradora · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/operaciones/BIT-OPER-FLOT-2026-10.md'),
+    ('BIT-OPER-MINA-2026-10', 'Bitácora del Jefe de Operaciones Mina · Extracción · octubre 2026', 'operations_log', 'Jefe de Operaciones Mina', 'Mina rajo abierto · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/operaciones/BIT-OPER-MINA-2026-10.md'),
+    ('BIT-OPER-PUERTO-2026-10', 'Bitácora del Jefe de Operaciones Portuarias · Embarque · octubre 2026', 'operations_log', 'Jefe de Operaciones Portuarias', 'Puerto de embarque · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/operaciones/BIT-OPER-PUERTO-2026-10.md');
 
 INSERT INTO kb.chunks (doc_id, chunk_no, section, gjahr, monat, rcntr, content) VALUES
 ('BIT-MANT-CAEX-2026-10', 1, 'Parada no programada de la flota CAEX', 2026, 10, 'RCNTR_MINA_CAEX',
-$md$Parada no programada de 3 camiones Komatsu por falla prematura de inyectores debido a contaminación de diésel, reduciendo horas operativas e incrementando gasto en repuestos.$md$);
+$md$Parada no programada de 3 camiones Komatsu por falla prematura de inyectores debido a contaminación de diésel, reduciendo horas operativas e incrementando gasto en repuestos.$md$),
+
+('BIT-MANT-SXEW-2026-10', 1, 'Falla de la bomba principal de ácido sulfúrico', 2026, 10, 'RCNTR_LIXIV_SXEW',
+$md$Falla catastrófica en bomba de ácido sulfúrico principal detuvo el riego de la pila por 48 horas, desplomando las toneladas procesadas. Los costos fijos se mantuvieron.$md$),
+
+('BIT-OPER-FLOT-2026-10', 1, 'Caída de ley y dosificación de colector', 2026, 10, 'RCNTR_CONCEN_FLOT',
+$md$Caída abrupta en la ley del mineral obligó a incrementar la dosificación de colector Xantato a 15 g/ton para mantener la recuperación metalúrgica, disparando el OPEX de reactivos.$md$),
+
+('BIT-OPER-MINA-2026-10', 1, 'Inundación estacional en el fondo del rajo', 2026, 10, 'RCNTR_MINA_TRUCK',
+$md$Inundación estacional en el fondo del rajo redujo el ritmo de extracción en 15% e incrementó el consumo de diésel por uso intensivo de motobombas de achique.$md$),
+
+('BIT-OPER-PUERTO-2026-10', 1, 'Cierre del puerto por marejadas', 2026, 10, 'RCNTR_PUERTO_EMB',
+$md$Fuertes marejadas impidieron el atraque de buques durante 5 días. Las toneladas embarcadas cayeron a cero, pero los costos fijos de puerto se mantuvieron, disparando el OPEX unitario.$md$);

@@ -95,7 +95,7 @@ def status() -> dict:
 
 @app.get("/api/v1/opex/cost-centers")
 def cost_centers(language: str = "es") -> dict:
-    """Cost centers with actuals and plan categories (selector of the console)."""
+    """Cost centers of the value chain with actuals and plan categories (selector of the console)."""
     with localized(normalize_language(language)):
         return opex.cost_centers()
 
@@ -104,8 +104,8 @@ def cost_centers(language: str = "es") -> dict:
 def timeline(rcntr: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,20}$")] = None,
              category: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,10}$")] = None,
              language: str = "es") -> dict:
-    """Continuous monthly OPEX: actuals (ACDOCA) + plan (ACDOCP), drivers and unit OPEX computed by Trino,
-    with the deviation summary of the latest actual month."""
+    """Continuous monthly OPEX: actuals (ACDOCA) against the budget (ACDOCP · BUDG) + plan (ACDOCP), drivers
+    and unit OPEX computed by Trino, with the deviation summary (actual - budget) of the latest actual month."""
     with localized(normalize_language(language), rcntr):
         center, plan_category = opex.scope(rcntr, category)
         return opex.timeline(center, plan_category)

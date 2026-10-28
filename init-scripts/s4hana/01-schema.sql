@@ -3,9 +3,10 @@
 -- SAP tables kept with their original names and fields (lower case), client '100':
 --   ACDOCA   Universal Journal: actual line items (past). OPEX is reported in group currency (KSL).
 --   ACDOCP   Plan Data Line Items: plan exported from SAP Analytics Cloud; the plan version is the
---            plan category (CATEGORY) — ACDOCP has no RVERS field (future)
+--            plan category (CATEGORY: BUDG base budget, RF18M rolling forecast) — ACDOCP has no RVERS
 --   FINSSKF  General Ledger statistical key figures (current values): physical drivers (operating
---            hours, tonnes) as actual (RRCTY 0) and plan (RRCTY 1 + CATEGORY) values
+--            hours, tonnes moved / stacked / processed / shipped) as actual (RRCTY 0) and plan
+--            (RRCTY 1 + CATEGORY) values
 -- Company code / controlling area CL01 (Chile). Functional and group currency USD, so WSL = HSL = KSL
 -- and no translation is needed. Fiscal year variant K4: posting period POPER = calendar month.
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -59,7 +60,7 @@ CREATE TABLE sap.acdocp (
     ryear       char(4)       NOT NULL,                   -- general ledger fiscal year
     rldnr       varchar(2)    NOT NULL DEFAULT '0L',
     rbukrs      varchar(4)    NOT NULL,
-    category    varchar(10)   NOT NULL,                   -- plan category = plan version (RF18M: rolling forecast 18M)
+    category    varchar(10)   NOT NULL,                   -- plan category = plan version (BUDG budget, RF18M forecast)
     racct       varchar(10)   NOT NULL,
     rwcur       varchar(5)    NOT NULL DEFAULT 'USD',     -- transaction currency
     wsl         numeric(23,2) NOT NULL,
@@ -88,12 +89,12 @@ COMMENT ON TABLE sap.acdocp IS 'Plan Data Line Items - plan per plan category (C
 -- quantity of the month that starts on DATE_FROM.
 CREATE TABLE sap.finsskf (
     rclnt     char(3)       NOT NULL DEFAULT '100',
-    stagr     varchar(6)    NOT NULL,                   -- statistical key figure: HOROP hours, TONMOV tonnes
+    stagr     varchar(6)    NOT NULL,                   -- statistical key figure: HOROP, TONMOV, TONAPI, TONPRO, TONEMB
     recid     varchar(22)   NOT NULL,                   -- statistical key figure item
     date_from date          NOT NULL,                   -- valid from
     grtyp     char(1)       NOT NULL DEFAULT '2',       -- key figure category: 1 fixed value, 2 totals value
     msl       numeric(23,3) NOT NULL,                   -- statistical key figure quantity
-    runit     varchar(3)    NOT NULL,                   -- quantity unit: H hour, TO tonne
+    runit     varchar(3)    NOT NULL,                   -- quantity unit: H hour, TO tonne, WMT wet metric tonne
     timestamp numeric(15,0) NOT NULL,                   -- UTC time stamp YYYYMMDDhhmmss
     rbukrs    varchar(4)    NOT NULL,
     rrcty     char(1)       NOT NULL,                   -- record type: 0 actual, 1 plan
@@ -101,7 +102,7 @@ CREATE TABLE sap.finsskf (
     rcntr     varchar(20)   NOT NULL,
     prctr     varchar(10),
     kokrs     varchar(4)    NOT NULL DEFAULT 'CL01',
-    logsys    varchar(10),                              -- logical system of origin: DISPATCH (actual), SAC (plan)
+    logsys    varchar(10),                              -- origin: DISPATCH / PIMS / PORTMS (actual), SAC (plan)
     PRIMARY KEY (rclnt, stagr, recid, date_from),
     CHECK (rrcty IN ('0', '1')),
     CHECK ((rrcty = '1') = (category <> '')),
@@ -109,17 +110,17 @@ CREATE TABLE sap.finsskf (
     CHECK (msl >= 0)
 );
 CREATE INDEX finsskf_cost_center_idx ON sap.finsskf (rcntr, rrcty, category, date_from);
-COMMENT ON TABLE sap.finsskf IS 'Statistical key figures per cost center: operating hours (H) and tonnes hauled (TO)';
+COMMENT ON TABLE sap.finsskf IS 'Statistical key figures per cost center: physical drivers of the unit OPEX (H, TO, WMT)';
 
 -- Number range for simulator documents (the seed uses 49000100xx / 50000100xx / 01000100xx).
 CREATE SEQUENCE sap.acdoca_number_seq START 4900020001;
 
--- Posts one balanced journal entry to a cost center, as S/4 does for a goods issue (WA:
--- Dr cost element on the cost center / Cr 0013100000 inventory), a service entry (WE: Cr 0021100000
--- GR/IR) or a G/L posting (SA: Cr 0024100000 payroll payable). Amounts in USD = WSL = HSL = KSL.
+-- Posts one balanced journal entry to a cost center (and its profit center), as S/4 does for a goods
+-- issue (WA: Dr cost element on the cost center / Cr 0013100000 inventory), a service entry (WE:
+-- Cr 0021100000 GR/IR) or a G/L posting (SA: Cr 0024100000 payroll payable). USD = WSL = HSL = KSL.
 CREATE FUNCTION sap.post_cost_center_document(p_belnr varchar, p_budat date, p_blart varchar, p_racct varchar,
-                                              p_rcntr varchar, p_amount numeric, p_sgtxt varchar,
-                                              p_usnam varchar, p_matnr varchar DEFAULT NULL)
+                                              p_rcntr varchar, p_prctr varchar, p_amount numeric,
+                                              p_sgtxt varchar, p_usnam varchar, p_matnr varchar DEFAULT NULL)
 RETURNS varchar
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -130,10 +131,10 @@ BEGIN
     INSERT INTO sap.acdoca (rbukrs, gjahr, belnr, docln, poper, fiscyearper, budat, blart, racct, koart, drcrk,
                             wsl, hsl, ksl, rcntr, prctr, matnr, sgtxt, usnam)
     VALUES ('CL01', v_gjahr, p_belnr, '000001', v_poper, v_gjahr || v_poper, p_budat, p_blart, p_racct, 'S', 'S',
-            p_amount, p_amount, p_amount, p_rcntr, 'CL01MINA', p_matnr, p_sgtxt, p_usnam),
+            p_amount, p_amount, p_amount, p_rcntr, p_prctr, p_matnr, p_sgtxt, p_usnam),
            ('CL01', v_gjahr, p_belnr, '000002', v_poper, v_gjahr || v_poper, p_budat, p_blart, v_offset,
             CASE p_blart WHEN 'WA' THEN 'M' ELSE 'S' END, 'H',
-            -p_amount, -p_amount, -p_amount, NULL, 'CL01MINA', p_matnr, p_sgtxt, p_usnam);
+            -p_amount, -p_amount, -p_amount, NULL, p_prctr, p_matnr, p_sgtxt, p_usnam);
     RETURN p_belnr;
 END $$;
 
@@ -152,7 +153,7 @@ BEGIN
     SELECT max(a.budat) INTO v_budat FROM sap.acdoca a WHERE a.rcntr = c_rcntr;
     FOR i IN 1..p_events LOOP
         v_belnr := nextval('sap.acdoca_number_seq')::text;
-        PERFORM sap.post_cost_center_document(v_belnr, v_budat, 'WA', '0061100100', c_rcntr,
+        PERFORM sap.post_cost_center_document(v_belnr, v_budat, 'WA', '0061100100', c_rcntr, 'CL01MINA',
                                               round((2000 + random() * 6000)::numeric, 2),
                                               'Consumo repuestos CAEX (simulador)', 'SIMULATOR');
         RETURN QUERY

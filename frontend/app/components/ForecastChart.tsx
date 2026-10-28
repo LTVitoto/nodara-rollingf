@@ -1,23 +1,29 @@
 "use client";
 
 // Monthly OPEX timeline: actual months (ACDOCA) followed by the plan months (ACDOCP) as one continuous
-// column chart. Emphasis form: the cost element that drives the deviation in the accent hue, the rest
-// of the OPEX in the de-emphasis gray, plan months in dimmer steps of both. One y-axis per measure
-// (never dual-axis): the measure toggle swaps USD ↔ USD/h ↔ USD/t. Colors validated with the dataviz
-// validator on the panel surface #0f172a: CVD ΔE ≥ 14.6, normal-vision ΔE ≥ 15.7, contrast ≥ 3.3:1.
+// column chart, each actual month with its base budget (BUDG) as a reference tick. Emphasis form: the
+// cost element that drives the deviation in the accent hue, the rest of the OPEX in the de-emphasis
+// gray, plan months in dimmer steps of both. One y-axis per measure (never dual-axis): the measure
+// toggle swaps USD ↔ the unit OPEX of each driver of the cost center (USD/h, USD/t, USD/WMT). Colors
+// validated with the dataviz validator on the panel surface #0f172a: CVD ΔE ≥ 14.6, normal-vision
+// ΔE ≥ 15.7, contrast ≥ 3.3:1; the budget tick is a neutral reference mark (ink, 14:1) with a 2px
+// surface halo, named in the legend, the tooltip and the table (never color alone).
 import { useEffect, useRef, useState } from "react";
 
-import { formatCompact, formatMonth, formatNumber } from "../format";
+import { formatCompact, formatMonth, formatNumber, formatPercent } from "../format";
 import { useI18n } from "../i18n";
 import type { Month, Timeline } from "../types";
 
-export type Measure = "opex" | "usdPerHour" | "usdPerTonne";
+// "opex" or the STAGR of a driver: its unit OPEX (OPEX / driver, computed by Trino).
+export type Measure = string;
+export const OPEX: Measure = "opex";
 
 const COLOR = {
   accent: "#3987e5",
   accentPlan: "#256abf",
   rest: "#898781",
   restPlan: "#6f6e69",
+  budget: "#e2e8f0",
   surface: "#0f172a",
   grid: "#1e293b",
   baseline: "#334155",
@@ -30,9 +36,18 @@ const MAX_BAR = 24;
 const TOOLTIP_WIDTH = 256;
 const GAP = 2;
 const RADIUS = 4;
+const TICK_OVERHANG = 4;
 
 function valueOf(month: Month, measure: Measure): number | null {
-  return measure === "opex" ? month.opex : measure === "usdPerHour" ? month.usd_per_hour : month.usd_per_tonne;
+  return measure === OPEX ? month.opex : month.drivers[measure]?.unit_cost ?? null;
+}
+
+function budgetOf(month: Month, measure: Measure): number | null {
+  return measure === OPEX ? month.budget?.opex ?? null : month.budget?.drivers[measure]?.unit_cost ?? null;
+}
+
+function budgetDelta(month: Month, measure: Measure): number | null {
+  return measure === OPEX ? month.budget?.delta_pct ?? null : month.budget?.drivers[measure]?.unit_delta_pct ?? null;
 }
 
 // Clean y-axis ticks (1 / 2 / 2.5 / 5 × 10^k): chart geometry, not data.
@@ -48,6 +63,23 @@ function ticks(max: number): number[] {
 function column(x: number, top: number, bottom: number, width: number, rounded: boolean): string {
   const r = rounded ? Math.min(RADIUS, width / 2, Math.max(0, bottom - top)) : 0;
   return `M${x},${bottom}V${top + r}Q${x},${top} ${x + r},${top}H${x + width - r}Q${x + width},${top} ${x + width},${top + r}V${bottom}Z`;
+}
+
+function TooltipRow({ label, value, strong = false, mark }: {
+  label: string;
+  value: string;
+  strong?: boolean;
+  mark?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="flex min-w-0 items-center gap-1.5 text-slate-400">
+        {mark ? <span className="inline-block h-0.5 w-3 shrink-0" style={{ background: mark }} /> : null}
+        <span className="truncate">{label}</span>
+      </dt>
+      <dd className={`whitespace-nowrap tabular-nums ${strong ? "font-semibold text-slate-50" : "text-slate-100"}`}>{value}</dd>
+    </div>
+  );
 }
 
 export function ForecastChart({ timeline, measure, emphasis }: {
@@ -71,9 +103,14 @@ export function ForecastChart({ timeline, measure, emphasis }: {
   }, [table]);
 
   const months = timeline.periods;
+  const budgetLabel = t.chart.budget(timeline.budget_category);
+  const driver = timeline.drivers.find((d) => d.stagr === measure);
+  const digits = driver ? driver.decimals : 0;
+  const unit = driver ? `USD/${driver.symbol}` : "USD";
   const accountName = (racct: string) => timeline.accounts.find((a) => a.racct === racct)?.texts[language] ?? racct;
-  const stacked = measure === "opex" && emphasis !== null;
-  const yTicks = ticks(Math.max(0, ...months.map((m) => valueOf(m, measure) ?? 0)));
+  const stacked = measure === OPEX && emphasis !== null;
+  const hasBudget = months.some((m) => budgetOf(m, measure) !== null);
+  const yTicks = ticks(Math.max(0, ...months.flatMap((m) => [valueOf(m, measure) ?? 0, budgetOf(m, measure) ?? 0])));
   const yMax = yTicks[yTicks.length - 1];
   const plotWidth = width - MARGIN.left - MARGIN.right;
   const band = plotWidth / Math.max(months.length, 1);
@@ -84,11 +121,13 @@ export function ForecastChart({ timeline, measure, emphasis }: {
   const lastActual = firstPlan === -1 ? months.length - 1 : firstPlan - 1;
   const labelled = new Set([lastActual, months.length - 1].filter((i) => i >= 0));
   const labelEvery = Math.max(1, Math.ceil(46 / band));
-  const digits = measure === "usdPerHour" ? 2 : measure === "usdPerTonne" ? 4 : 0;
-  const unit = measure === "opex" ? "USD" : measure === "usdPerHour" ? "USD/h" : "USD/t";
-  const display = (value: number | null) => (measure === "opex" ? formatCompact(value, locale) : formatNumber(value, locale, digits));
+  const display = (value: number | null) => (measure === OPEX ? formatCompact(value, locale) : formatNumber(value, locale, digits));
+  // Tooltip value of the shown measure, written like its row: "USD 1.234" or the bare unit OPEX.
+  const tooltipValue = (value: number | null) =>
+    measure === OPEX ? `USD ${formatNumber(value, locale)}` : formatNumber(value, locale, digits);
   const kind = (month: Month) => (month.kind === "actual" ? t.chart.actual : t.chart.plan);
   const focused = active === null ? null : months[active];
+  const focusedBudget = focused ? budgetOf(focused, measure) : null;
   // Tooltip beside the hovered column, clamped inside the chart (no horizontal page scroll on phones).
   const tooltipWidth = Math.min(TOOLTIP_WIDTH, width);
   const anchor = MARGIN.left + band * (active ?? 0);
@@ -119,6 +158,14 @@ export function ForecastChart({ timeline, measure, emphasis }: {
           </li>
         </>
       ) : null}
+      {hasBudget ? (
+        <li className="flex items-center gap-1.5">
+          <svg width={14} height={8} aria-hidden="true">
+            <line x1={1} x2={13} y1={4} y2={4} stroke={COLOR.budget} strokeWidth={2} strokeLinecap="round" />
+          </svg>
+          {budgetLabel}
+        </li>
+      ) : null}
       <li className="flex items-center gap-1.5 text-slate-400">
         <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: COLOR.accent }} />
         {t.chart.actual}
@@ -139,13 +186,17 @@ export function ForecastChart({ timeline, measure, emphasis }: {
                 <th className="py-1.5 pr-3 text-left font-medium">{t.chart.period}</th>
                 <th className="py-1.5 pr-3 text-left font-medium">{t.chart.kind}</th>
                 <th className="py-1.5 pr-3 font-medium">{t.chart.total}</th>
+                <th className="py-1.5 pr-3 font-medium">{budgetLabel}</th>
+                <th className="py-1.5 pr-3 font-medium">{t.chart.deviation}</th>
                 {timeline.accounts.map((a) => (
                   <th key={a.racct} className="py-1.5 pr-3 font-medium">{a.texts[language]}</th>
                 ))}
-                <th className="py-1.5 pr-3 font-medium">{t.chart.hours}</th>
-                <th className="py-1.5 pr-3 font-medium">{t.chart.tonnes}</th>
-                <th className="py-1.5 pr-3 font-medium">{t.chart.unitHour}</th>
-                <th className="py-1.5 font-medium">{t.chart.unitTonne}</th>
+                {timeline.drivers.map((d) => (
+                  <th key={d.stagr} className="py-1.5 pr-3 font-medium">{d.texts[language]} ({d.symbol})</th>
+                ))}
+                {timeline.drivers.map((d) => (
+                  <th key={`unit-${d.stagr}`} className="py-1.5 pr-3 font-medium">{t.chart.unit(d.symbol)}</th>
+                ))}
               </tr>
             </thead>
             <tbody className="text-slate-200">
@@ -154,13 +205,19 @@ export function ForecastChart({ timeline, measure, emphasis }: {
                   <td className="py-1 pr-3 text-left">{formatMonth(m.period, locale)}</td>
                   <td className="py-1 pr-3 text-left text-slate-400">{kind(m)}</td>
                   <td className="py-1 pr-3">{formatNumber(m.opex, locale)}</td>
+                  <td className="py-1 pr-3">{formatNumber(m.budget?.opex, locale)}</td>
+                  <td className="py-1 pr-3">{formatPercent(m.budget?.delta_pct, locale)}</td>
                   {timeline.accounts.map((a) => (
                     <td key={a.racct} className="py-1 pr-3">{formatNumber(m.accounts[a.racct], locale)}</td>
                   ))}
-                  <td className="py-1 pr-3">{formatNumber(m.hours, locale)}</td>
-                  <td className="py-1 pr-3">{formatNumber(m.tonnes, locale)}</td>
-                  <td className="py-1 pr-3">{formatNumber(m.usd_per_hour, locale, 2)}</td>
-                  <td className="py-1">{formatNumber(m.usd_per_tonne, locale, 4)}</td>
+                  {timeline.drivers.map((d) => (
+                    <td key={d.stagr} className="py-1 pr-3">{formatNumber(m.drivers[d.stagr]?.quantity, locale)}</td>
+                  ))}
+                  {timeline.drivers.map((d) => (
+                    <td key={`unit-${d.stagr}`} className="py-1 pr-3">
+                      {formatNumber(m.drivers[d.stagr]?.unit_cost, locale, d.decimals)}
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>
@@ -188,7 +245,7 @@ export function ForecastChart({ timeline, measure, emphasis }: {
                     stroke={tick === 0 ? COLOR.baseline : COLOR.grid} strokeWidth={1} />
               <text x={MARGIN.left - 8} y={y(tick)} dy="0.32em" textAnchor="end" fontSize={11} fill={COLOR.muted}
                     className="tabular-nums">
-                {measure === "opex" ? formatCompact(tick, locale) : formatNumber(tick, locale, tick % 1 ? digits : 0)}
+                {measure === OPEX ? formatCompact(tick, locale) : formatNumber(tick, locale, tick % 1 ? digits : 0)}
               </text>
             </g>
           ))}
@@ -212,10 +269,13 @@ export function ForecastChart({ timeline, measure, emphasis }: {
 
           {months.map((m, i) => {
             const value = valueOf(m, measure);
+            const budget = budgetOf(m, measure);
             const x = MARGIN.left + band * i + (band - barWidth) / 2;
             const plan = m.kind === "plan";
             const accent = plan ? COLOR.accentPlan : COLOR.accent;
             const part = stacked ? m.accounts[emphasis!] ?? 0 : null;
+            // Value label above the bar or its budget tick, whichever is higher (layout only).
+            const labelTop = Math.min(value === null ? baseline : y(value), budget === null ? baseline : y(budget));
             return (
               <g key={m.period} data-testid={plan ? "bar-plan" : "bar-actual"}>
                 {value !== null && part === null ? (
@@ -230,8 +290,16 @@ export function ForecastChart({ timeline, measure, emphasis }: {
                     ) : null}
                   </>
                 ) : null}
+                {budget !== null ? (
+                  <g data-testid="budget-marker">
+                    <line x1={x - TICK_OVERHANG} x2={x + barWidth + TICK_OVERHANG} y1={y(budget)} y2={y(budget)}
+                          stroke={COLOR.surface} strokeWidth={6} strokeLinecap="round" />
+                    <line x1={x - TICK_OVERHANG} x2={x + barWidth + TICK_OVERHANG} y1={y(budget)} y2={y(budget)}
+                          stroke={COLOR.budget} strokeWidth={2} strokeLinecap="round" />
+                  </g>
+                ) : null}
                 {value !== null && labelled.has(i) ? (
-                  <text x={x + barWidth / 2} y={y(value) - 6} textAnchor="middle" fontSize={11} fontWeight={600}
+                  <text x={x + barWidth / 2} y={labelTop - 6} textAnchor="middle" fontSize={11} fontWeight={600}
                         fill={COLOR.ink}>{display(value)}</text>
                 ) : null}
                 {(i - lastActual) % labelEvery === 0 ? (
@@ -245,7 +313,8 @@ export function ForecastChart({ timeline, measure, emphasis }: {
                   height={PLOT_HEIGHT + 20}
                   fill="transparent"
                   tabIndex={0}
-                  aria-label={`${formatMonth(m.period, locale)} · ${kind(m)} · ${display(value)} ${unit}`}
+                  aria-label={`${formatMonth(m.period, locale)} · ${kind(m)} · ${display(value)} ${unit}`
+                    + (budget !== null ? ` · ${budgetLabel} ${display(budget)}` : "")}
                   onPointerEnter={() => setActive(i)}
                   onFocus={() => setActive(i)}
                   onBlur={() => setActive(null)}
@@ -268,35 +337,27 @@ export function ForecastChart({ timeline, measure, emphasis }: {
               <span>{kind(focused)}</span>
             </div>
             <dl className="space-y-1">
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-slate-400">{t.chart.total}</dt>
-                <dd className="font-semibold text-slate-50 tabular-nums">USD {formatNumber(focused.opex, locale)}</dd>
-              </div>
+              <TooltipRow label={t.chart.total} value={`USD ${formatNumber(focused.opex, locale)}`} strong />
+              {focusedBudget !== null ? (
+                <>
+                  <TooltipRow label={budgetLabel} value={tooltipValue(focusedBudget)} mark={COLOR.budget} />
+                  <TooltipRow label={t.chart.deviation} value={formatPercent(budgetDelta(focused, measure), locale)} />
+                </>
+              ) : null}
               {timeline.accounts.map((a) => (
-                <div key={a.racct} className="flex items-center justify-between gap-3">
-                  <dt className="flex min-w-0 items-center gap-1.5 text-slate-400">
-                    <span className="inline-block h-0.5 w-3 shrink-0"
-                          style={{ background: a.racct === emphasis ? COLOR.accent : COLOR.rest }} />
-                    <span className="truncate">{a.texts[language]}</span>
-                  </dt>
-                  <dd className="text-slate-100 tabular-nums">{formatNumber(focused.accounts[a.racct], locale)}</dd>
-                </div>
+                <TooltipRow key={a.racct} label={a.texts[language]} value={formatNumber(focused.accounts[a.racct], locale)}
+                            mark={a.racct === emphasis ? COLOR.accent : COLOR.rest} />
               ))}
-              <div className="flex items-baseline justify-between gap-3 border-t border-slate-800 pt-1">
-                <dt className="text-slate-400">{t.chart.hours}</dt>
-                <dd className="text-slate-100 tabular-nums">{formatNumber(focused.hours, locale)} h</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-slate-400">{t.chart.tonnes}</dt>
-                <dd className="text-slate-100 tabular-nums">{formatNumber(focused.tonnes, locale)} t</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-slate-400">{t.chart.unitHour}</dt>
-                <dd className="font-semibold text-slate-50 tabular-nums">{formatNumber(focused.usd_per_hour, locale, 2)}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-slate-400">{t.chart.unitTonne}</dt>
-                <dd className="text-slate-100 tabular-nums">{formatNumber(focused.usd_per_tonne, locale, 4)}</dd>
+              <div className="space-y-1 border-t border-slate-800 pt-1">
+                {timeline.drivers.map((d) => (
+                  <div key={d.stagr} className="space-y-1">
+                    <TooltipRow label={d.texts[language]}
+                                value={`${formatNumber(focused.drivers[d.stagr]?.quantity, locale)} ${d.symbol}`} />
+                    <TooltipRow label={t.chart.unit(d.symbol)}
+                                value={formatNumber(focused.drivers[d.stagr]?.unit_cost, locale, d.decimals)}
+                                strong={d.stagr === measure} />
+                  </div>
+                ))}
               </div>
             </dl>
           </div>

@@ -9,8 +9,9 @@ La deuda del punto 4 se consolida en [TECH_DEBT.md](TECH_DEBT.md) (ID, impacto, 
 ## Roles y scope
 
 - **Arquitecto de Datos Financieros e IA** (usuario): define el alcance y aprueba los cambios. **Programador Senior** (Claude): implementa y valida.
-- **Objetivo**: Rolling Forecast de OPEX a 18 meses para la Gran Minería. Trino calcula de forma determinista el OPEX
-  (KSL), los impulsores físicos y el OPEX unitario sobre el lakehouse. El LLM (NVIDIA NIM en la nube u Ollama local,
+- **Objetivo**: Rolling Forecast de OPEX a 18 meses para la cadena de valor de la Gran Minería (mina, plantas y
+  puerto). Trino calcula de forma determinista el OPEX (KSL), los impulsores físicos, el OPEX unitario y la desviación
+  real − presupuesto (`BUDG`) sobre el lakehouse. El LLM (NVIDIA NIM en la nube u Ollama local,
   a elección del operador) **no calcula**: explica las desviaciones cruzando esas cifras con las bitácoras de pgvector
   filtradas por Año, Mes y RCNTR. Responde en ES/EN/PT dentro de una simulación **air-gapped** cuya única salida es
   un gateway con allowlist (solo NVIDIA).
@@ -18,11 +19,22 @@ La deuda del punto 4 se consolida en [TECH_DEBT.md](TECH_DEBT.md) (ID, impacto, 
   PostgreSQL relacional (S/4HANA) · Debezium + Kafka · MinIO + Delta Lake + Unity Catalog OSS + Trino ·
   PostgreSQL + pgvector aislado (solo bitácoras) · FastAPI + LangChain + Ollama · Next.js + TailwindCSS (gráfico SVG
   propio, sin librerías) · NVIDIA NIM (cloud) · Langfuse v2 autoalojado · gateway de egress (squid).
-- **Seed ESTRICTO: caso CAEX OPEX** (`RCNTR_MINA_CAEX`, sociedad/área de control `CL01`, moneda de grupo USD) y nada
-  más. ACDOCA: 3 meses reales (2026-08 → 2026-10) con Repuestos (`0061100100`) al alza. ACDOCP: 18 meses de plan
-  (2026-11 → 2028-04, `CATEGORY = RF18M`, exportación SAC) que se estabilizan. FINSSKF: caída de horas operativas
-  (`HOROP`) en el mes actual (2026-10). Bitácora del Jefe de Mantenimiento de 2026-10 (inyectores Komatsu por diésel
-  contaminado). Todo dato nuevo debe pertenecer a un caso aprobado.
+- **Seed ESTRICTO: cadena de valor del OPEX C1, 5 casos aprobados** (sociedad/área de control `CL01`, moneda de grupo
+  USD) y nada más:
+  - `RCNTR_MINA_CAEX`: repuestos por los inyectores Komatsu; caída de horas operativas (`HOROP`).
+  - `RCNTR_MINA_TRUCK`: combustible por las motobombas de achique; toneladas movidas (`TONMOV`) −15 %.
+  - `RCNTR_LIXIV_SXEW`: repuestos por la falla de la bomba de ácido; caída de toneladas apiladas (`TONAPI`).
+  - `RCNTR_CONCEN_FLOT`: reactivos por el xantato a 15 g/t; toneladas procesadas (`TONPRO`) en presupuesto.
+  - `RCNTR_PUERTO_EMB`: costos fijos estables; caída de toneladas embarcadas (`TONEMB`, WMT) por marejadas.
+
+  Por centro de costo:
+  - ACDOCA: 3 meses reales (2026-08 → 2026-10).
+  - ACDOCP: `CATEGORY = BUDG` (presupuesto base) para esos 3 meses y `RF18M` para 18 meses (2026-11 → 2028-04) que
+    convergen al presupuesto.
+  - FINSSKF: impulsores reales y de plan (`BUDG`, `RF18M`).
+  - Una bitácora de 2026-10 con el texto aprobado por el Arquitecto.
+
+  Todo dato nuevo debe pertenecer a un caso aprobado.
 
 ## Mapa del sistema
 
@@ -51,16 +63,20 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 - **Idiomas**: código y comentarios en inglés; documentación en español; bitácoras originales en español; UI y
   respuestas del LLM en el idioma elegido (ES/EN/PT, por defecto ES).
 - **SAP**: tablas y campos SAP originales en minúsculas (cliente `100`, esquema `sap`) según las fichas de tabla
-  entregadas por el Arquitecto. `ACDOCP` no tiene `RVERS`: la versión del plan es `CATEGORY` (plan category); su clave
-  es `REQTSN/DATAPAKID/RECORD`. `FINSSKF` (valores vigentes) se identifica por `STAGR/RECID/DATE_FROM`, con `RRCTY`
-  (0 real, 1 plan) y `CATEGORY`. Un dato nuevo va en la tabla SAP real que lo contiene, nunca en columnas inventadas.
+  entregadas por el Arquitecto. `ACDOCP` no tiene `RVERS`: la versión del plan es `CATEGORY` (plan category): `BUDG`
+  presupuesto base, la referencia de la desviación, y `RF18M` rolling forecast. Su clave es `REQTSN/DATAPAKID/RECORD`.
+  `FINSSKF` (valores vigentes) se identifica por `STAGR/RECID/DATE_FROM`, con `RRCTY` (0 real, 1 plan) y `CATEGORY`;
+  `RECID` es el MD5 de RRCTY + CATEGORY + RBUKRS + RCNTR + STAGR (un ítem por centro de costo e impulsor). Un dato nuevo va en la tabla SAP real que lo contiene, nunca en columnas inventadas.
   ACDOCA debe quedar cuadrado por `belnr` (Σ `wsl` = Σ `hsl` = Σ `ksl` = 0). Textos de datos maestros fuera de alcance
-  (SKAT, CSKT, TKA03, categorías) solo en `backend/app/masterdata.py`.
-- **La IA no calcula**: toda cifra (OPEX por cuenta, horas, toneladas, USD/h, USD/t, variaciones, plan) se calcula en
+  (SKAT, CSKT, TKA03, categorías) solo en `backend/app/masterdata.py`, junto con el impulsor del OPEX unitario de cada
+  centro de costo (`UNIT_DRIVERS`), los símbolos de unidad (`H` → h, `TO` → t, `WMT`) y el orden de la cadena de valor.
+- **La IA no calcula**: toda cifra (OPEX por cuenta, impulsores, OPEX unitario por impulsor en USD/h, USD/t o USD/WMT,
+  desviación real − `BUDG`, variación vs. mes anterior, plan) se calcula en
   SQL de Trino (`backend/app/lakehouse.py`) sobre `lakehouse.silver.*`; Python y la UI solo formatean. Trino inlinea
   los CTE en cada referencia: leer cada tabla silver pocas veces (límite de 150 stages). El control de cifras
   (`backend/app/figures.py`) reporta todo número de la respuesta que no venga de Trino, de las bitácoras o de la pregunta.
-- **Base de conocimiento**: originales en `knowledge/raw-docs/<origen>/<doc_id>.md`, con `gjahr`, `monat` y `rcntr`
+- **Base de conocimiento**: originales en `knowledge/raw-docs/<origen>/<doc_id>.md` (orígenes `mantenimiento` y
+  `operaciones`; `doc_type` `maintenance_log` u `operations_log`), con `gjahr`, `monat` y `rcntr`
   obligatorios en el front matter y una sección `##` por fragmento. `make kb-seed` regenera
   `init-scripts/vectordb/02-seed-docs.sql`, que **nunca se edita a mano**. La recuperación filtra primero por
   RCNTR + Año + Mes del período analizado y después ordena por similitud.
@@ -73,9 +89,12 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 - **i18n de la UI**: todo texto estático y todo metadato de la respuesta viven en `frontend/app/dictionaries.ts`, que
   también usa el servidor (cookie `nodara.language`). `i18n.tsx` solo contiene el contexto de React. Los diccionarios
   ES/EN están tipados contra PT, así que si falta una clave el build falla.
-- **Gráficos**: forma de énfasis (cuenta que impulsa la desviación en acento, resto en gris), un solo eje por medida
-  (nunca doble eje), tooltip por columna con teclado, vista de tabla. Colores validados con el validador de dataviz
-  sobre la superficie `#0f172a`.
+- **Gráficos**: forma de énfasis (cuenta con el mayor sobrecosto material vs. `BUDG` en acento, resto en gris; sin
+  acento si ninguna cuenta se desvía), un solo eje por medida (nunca doble eje). Las medidas salen de los impulsores
+  del centro de costo (OPEX, USD/h, USD/t, USD/WMT). El presupuesto se dibuja como un tick de referencia neutro con
+  halo de superficie. Tooltip por columna con teclado y vista de tabla. Colores validados con el validador de dataviz
+  sobre la superficie `#0f172a`. Sin scroll horizontal en móvil: un `<select>` toma el ancho de su opción más larga,
+  así que va con `w-full`.
 - **Motores LLM**: `engine` = `nim` (por defecto) u `ollama`. El modelo NIM se cambia solo con `NIM_MODEL`, después de
   probarlo con una llamada real (NVIDIA retira modelos y habilita otros por cuenta). Si un intento supera
   `NIM_TIMEOUT_S` o falla, la pregunta sigue en Ollama y se informa en `model_used`/`attempts`. Los embeddings siempre son locales.
@@ -97,9 +116,13 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 
 1. `make config` → compose válido.
 2. `make up` → sin colisiones (preflight) y todo `healthy` (lo espera `scripts/wait-healthy.sh`).
-3. `make smoke` → **0 fallos**. Primero re-siembra (`make fresh`, borra los datos). Incluye el modelo financiero, el
-   caso CAEX, CDC → bronze → silver, OPEX unitario Trino = PostgreSQL, la IA en ES/EN/PT con NIM, la contingencia
-   Ollama, las trazas de Langfuse, el tiempo real y el egress, si los modelos están importados.
+3. `make smoke` → **0 fallos**. Primero re-siembra (`make fresh`, borra los datos). Incluye:
+   - el modelo financiero (categorías `BUDG` + `RF18M`) y los 5 casos de la cadena de valor;
+   - CDC → bronze → silver;
+   - OPEX unitario y desviación vs. `BUDG` idénticos en Trino y PostgreSQL;
+   - la IA en ES/EN/PT con NIM (CAEX) y la pregunta del OPEX unitario del puerto, más la contingencia Ollama, si los
+     modelos están importados;
+   - las trazas de Langfuse, el tiempo real y el egress.
 4. Si se tocó el frontend: `make ui-test` en verde.
 5. README, este archivo y `TECH_DEBT.md` actualizados.
 
@@ -130,9 +153,14 @@ los volúmenes, incluidos los modelos)
 - PostgreSQL concatena booleanos como `true`/`false` (`'x' || true`), no como `t`/`f`.
 - Los tests contra el stack en marcha se lanzan con `compose run --no-deps` (no tocan las dependencias).
 - GPU GTX 1070 Ti (Pascal, CC 6.1): Ollama usa el runner CUDA 12 (el de CUDA 13 no la soporta).
-- NVIDIA NIM: `meta/llama-3.1-70b-instruct` y `meta/llama-3.3-70b-instruct` dan 410 (EOL), y muchos modelos dan
-  404 *Not found for account*. Un modelo listado en `/v1/models` puede igual no responder: probarlo con una llamada real.
+- NVIDIA NIM:
+  - `meta/llama-3.1-70b-instruct` y `meta/llama-3.3-70b-instruct` dan 410 (EOL; 3.3 desde el 2026-08-26).
+  - `meta-llama/llama-3.3-70b-instruct` es nomenclatura de Hugging Face, no un ID de NVIDIA: da 404.
+  - Los 70B listados para la cuenta (Nemotron 70B, Palmyra Fin 70B), Nemotron 51B y Ultra 253B dan 404 *Not found
+    for account*; Llama 3.2 90B Vision no respondió en 90 s.
+  - Un modelo listado en `/v1/models` puede igual no responder: probarlo con una llamada real.
 - gpt-oss en NIM separa los miles con espacio fino (`4 207 000`): el control de cifras lo admite.
+- `Intl.NumberFormat("es")` no agrupa los números de 4 cifras: la UI muestra `7640 h` y el LLM recibe `7.640 h`.
 - Langfuse 2.x (Next.js) escucha en la IP del contenedor salvo con `HOSTNAME=0.0.0.0` (sin eso, el healthcheck falla).
 - `ChatNVIDIA` no tiene timeout de red: el límite `NIM_TIMEOUT_S` lo aplica `backend/app/llm.py` con un hilo por intento.
 - Copiar el proyecto con el Explorador de Windows deja archivos `*:Zone.Identifier` (están en `.gitignore`).

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { ChatPanel } from "./components/ChatPanel";
-import { ForecastChart, type Measure } from "./components/ForecastChart";
+import { ForecastChart, OPEX, type Measure } from "./components/ForecastChart";
 import { Header, nimConfigured, type Status } from "./components/Header";
 import { KpiTiles } from "./components/KpiTiles";
 import { useI18n, type Engine } from "./i18n";
@@ -11,7 +11,7 @@ import type { CostCenter, Timeline } from "./types";
 
 const ENGINE_KEY = "nodara.engine";
 const TIMELINE_REFRESH_MS = 20000; // the lakehouse moves with CDC: refresh the chart in place
-const MEASURES: Measure[] = ["opex", "usdPerHour", "usdPerTonne"];
+const EMPHASIS_MIN_PCT = 5; // only a material overrun vs budget (Trino's %) gets the accent hue
 
 export default function Home() {
   const { language, t } = useI18n();
@@ -22,7 +22,7 @@ export default function Home() {
   const [timeline, setTimeline] = useState<Timeline>();
   const [switching, setSwitching] = useState(false);
   const [notice, setNotice] = useState<"notReady" | "backendUnavailable">();
-  const [measure, setMeasure] = useState<Measure>("opex");
+  const [measure, setMeasure] = useState<Measure>(OPEX);
   const nimAvailable = !status || nimConfigured(status.llm);
 
   useEffect(() => {
@@ -98,15 +98,23 @@ export default function Home() {
     };
   }, [rcntr]);
 
-  // The cost element that drives the deviation of the analyzed month gets the accent hue.
+  // The cost element that drives the deviation vs budget of the analyzed month gets the accent hue
+  // (none when no account overruns its budget materially, e.g. fixed costs on budget).
   const emphasis = useMemo(() => {
-    const accounts = timeline?.summary?.accounts ?? [];
-    const driver = accounts.reduce<(typeof accounts)[number] | undefined>(
-      (best, account) => ((account.delta_previous ?? -Infinity) > (best?.delta_previous ?? -Infinity) ? account : best),
+    const overruns = (timeline?.summary?.accounts ?? []).filter((a) => (a.delta_budget_pct ?? 0) >= EMPHASIS_MIN_PCT);
+    return overruns.reduce<(typeof overruns)[number] | undefined>(
+      (best, account) => ((account.delta_budget ?? -Infinity) > (best?.delta_budget ?? -Infinity) ? account : best),
       undefined,
-    );
-    return driver?.racct ?? timeline?.accounts[0]?.racct ?? null;
+    )?.racct ?? null;
   }, [timeline]);
+
+  // OPEX plus the unit OPEX of every driver of the cost center; a measure the selected cost center does
+  // not have falls back to OPEX.
+  const measures: { id: Measure; label: string }[] = [
+    { id: OPEX, label: t.controls.opex },
+    ...(timeline?.drivers ?? []).map((d) => ({ id: d.stagr, label: `USD/${d.symbol}` })),
+  ];
+  const shown = measures.some((option) => option.id === measure) ? measure : OPEX;
 
   function setEngine(next: Engine) {
     setEngineState(next);
@@ -122,13 +130,13 @@ export default function Home() {
       <Header status={status} />
 
       <section className="mt-6 flex flex-wrap items-end gap-4">
-        <label className="flex flex-col gap-1 text-xs text-slate-400">
+        <label className="flex w-full min-w-0 flex-col gap-1 text-xs text-slate-400 sm:w-auto">
           {t.controls.costCenter}
           <select
             data-testid="cost-center-select"
             value={rcntr ?? ""}
             onChange={(e) => setRcntr(e.target.value)}
-            className="min-w-72 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-sky-500"
+            className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-sky-500 sm:min-w-72"
           >
             {centers.map((center) => (
               <option key={center.rcntr} value={center.rcntr}>
@@ -140,17 +148,17 @@ export default function Home() {
         <div className="flex flex-col gap-1 text-xs text-slate-400">
           <span id="measure-label">{t.controls.measure}</span>
           <div role="group" aria-labelledby="measure-label" className="inline-flex rounded-lg border border-slate-700 p-0.5">
-            {MEASURES.map((option) => (
+            {measures.map((option) => (
               <button
-                key={option}
+                key={option.id}
                 type="button"
-                onClick={() => setMeasure(option)}
-                aria-pressed={measure === option}
+                onClick={() => setMeasure(option.id)}
+                aria-pressed={shown === option.id}
                 className={`rounded-md px-3 py-1.5 font-semibold transition-colors ${
-                  measure === option ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-100"
+                  shown === option.id ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-100"
                 }`}
               >
-                {t.controls.measures[option]}
+                {option.label}
               </button>
             ))}
           </div>
@@ -175,10 +183,10 @@ export default function Home() {
       >
         <h2 className="text-sm font-semibold uppercase tracking-wide text-sky-400">{t.chart.title}</h2>
         <p className="mt-0.5 text-xs text-slate-400">
-          {timeline ? `${timeline.rcntr} · ${t.chart.subtitle(timeline.category)}` : t.controls.loading}
+          {timeline ? `${timeline.rcntr} · ${t.chart.subtitle(timeline.budget_category, timeline.category)}` : t.controls.loading}
         </p>
         <div className="mt-4">
-          {timeline ? <ForecastChart timeline={timeline} measure={measure} emphasis={emphasis} /> : null}
+          {timeline ? <ForecastChart timeline={timeline} measure={shown} emphasis={emphasis} /> : null}
         </div>
       </section>
 

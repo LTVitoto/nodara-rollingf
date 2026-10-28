@@ -3,27 +3,34 @@ import type { Engine, Language } from "./dictionaries";
 
 export type Texts = Record<Language, string>;
 
+// Analyzed actual month against the base budget (BUDG), with the previous actual month as context.
 export type Metric = {
   current: number | null;
+  budget: number | null;
   previous: number | null;
-  baseline: number | null;
+  delta_budget: number | null;
+  delta_budget_pct: number | null;
   delta_previous: number | null;
   delta_previous_pct: number | null;
-  delta_baseline: number | null;
-  delta_baseline_pct: number | null;
   share_pct: number | null;
 };
+
+// Statistical key figure (FINSSKF STAGR) a unit OPEX is reported against: symbol "h", "t", "WMT".
+export type Driver = { stagr: string; runit: string; symbol: string; texts: Texts };
 
 export type Forecast = {
   months: number;
   first_period?: string;
   last_period?: string;
+  stagr?: string;
+  runit?: string;
+  decimals?: number;
   total_opex?: number;
-  horizon_usd_per_hour?: number;
+  horizon_unit_cost?: number;
   first_opex?: number;
-  first_usd_per_hour?: number;
+  first_unit_cost?: number;
   last_opex?: number;
-  last_usd_per_hour?: number;
+  last_unit_cost?: number;
   stable_from?: string | null;
   last_vs_period_pct?: number;
 };
@@ -34,24 +41,34 @@ export type Analysis = {
   currency: string;
   category: string;
   category_texts: Texts;
+  budget_category: string;
+  budget_texts: Texts;
   period: string;
   previous_period: string | null;
-  baseline: { months: number; from: string | null; to: string | null };
-  totals: Partial<Record<"OPEX" | "HOROP" | "TONMOV" | "USD_H" | "USD_T", Metric>>;
+  driver: string | null;
+  opex: Metric | null;
+  drivers: (Driver & Metric)[];
+  unit_costs: (Driver & Metric & { decimals: number })[];
   accounts: (Metric & { racct: string; texts: Texts })[];
   top_postings: { belnr: string; budat: string; racct: string; sgtxt: string; ksl: number }[];
   forecast: Forecast;
 };
 
+export type DriverValue = { quantity: number | null; unit_cost: number | null };
+
 export type Month = {
   period: string;
   kind: "actual" | "plan";
-  opex: number;
-  hours: number | null;
-  tonnes: number | null;
-  usd_per_hour: number | null;
-  usd_per_tonne: number | null;
+  opex: number | null;
   accounts: Record<string, number>;
+  drivers: Record<string, DriverValue>;
+  budget: {
+    opex: number;
+    delta: number | null;
+    delta_pct: number | null;
+    accounts: Record<string, number>;
+    drivers: Record<string, DriverValue & { unit_delta_pct: number | null }>;
+  } | null;
 };
 
 export type Timeline = {
@@ -60,8 +77,11 @@ export type Timeline = {
   currency: string;
   category: string;
   category_texts: Texts;
+  budget_category: string;
   periods: Month[];
   accounts: { racct: string; texts: Texts }[];
+  drivers: (Driver & { decimals: number })[];
+  driver: string | null;
   summary: Analysis | null;
 };
 
@@ -70,6 +90,7 @@ export type CostCenter = {
   first_actual: string | null;
   last_actual: string | null;
   categories: string[];
+  budget: boolean;
   texts: Texts;
   category_texts: Record<string, Texts>;
 };

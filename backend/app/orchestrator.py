@@ -1,6 +1,6 @@
 """Variance explanation with engine and language routing:
-question (ES / EN / PT) → deterministic analysis in Trino (OPEX per cost element, drivers, unit OPEX,
-plan horizon) → maintenance logs from pgvector pre-filtered by Año / Mes / RCNTR of the analyzed month
+question (ES / EN / PT) → deterministic analysis in Trino (actual vs budget per cost element, drivers, unit OPEX,
+plan horizon) → operational logs from pgvector pre-filtered by Año / Mes / RCNTR of the analyzed month
 → answer from the selected engine (NVIDIA NIM with local fallback, or local Ollama) written EXACTLY in
 the requested language. The LLM never calculates: a figures guard checks that every number it quotes
 comes from Trino or the logs, and a language guard re-translates a drifted answer. Every question is
@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langdetect import DetectorFactory, LangDetectException, detect_langs
 
 from . import figures, knowledge, llm, observability, opex
-from .masterdata import ACCOUNTS, texts
+from .masterdata import ACCOUNTS, UNITS, texts
 from .messages import LANGUAGE_NAMES, message
 from .settings import get_settings
 
@@ -27,52 +27,58 @@ class KnowledgeBaseEmpty(RuntimeError):
 
 SYSTEM_PROMPTS = {
     "es": ("Eres el analista FP&A con IA de Nodara Minería Chile y explicas al Gerente de Finanzas las desviaciones de "
-           "OPEX del Rolling Forecast a 18 meses.\n"
+           "OPEX del Rolling Forecast a 18 meses en la cadena de valor (mina, plantas y puerto).\n"
            "Reglas obligatorias:\n"
            "1. Responde EXCLUSIVAMENTE en español; deja sin traducir solo códigos SAP, unidades y nombres propios.\n"
            "2. NO calcules: nunca sumes, restes, multipliques, dividas, promedies ni conviertas cifras. Usa SOLO las cifras "
            "del bloque «CÁLCULO DETERMINISTA», copiadas tal como aparecen y con su unidad, respetando el signo de cada Δ "
            "(negativo = disminución). Si una cifra no está, di que no está disponible.\n"
-           "3. Explica la causa operacional SOLO con las bitácoras recuperadas y cítalas como [DOC-ID §sección]. Si no hay "
+           "3. La desviación del mes es real − presupuesto (ACDOCP, categoría BUDG): repórtala primero; el mes anterior es "
+           "solo contexto.\n"
+           "4. Explica la causa operacional SOLO con las bitácoras recuperadas y cítalas como [DOC-ID §sección]. Si no hay "
            "bitácoras del período, dilo y no supongas causas.\n"
-           "4. Relaciona la causa con los impulsores calculados: gasto por cuenta (ACDOCA), horas operativas y toneladas "
-           "(FINSSKF) y OPEX unitario.\n"
-           "5. Indica qué proyecta el plan (ACDOCP) para los próximos meses con sus cifras.\n"
-           "6. Nunca inventes datos, fechas, equipos ni cifras.\n"
-           "Formato ejecutivo de 200 palabras como máximo: 1) Desviación del mes. 2) Causa operacional. 3) Impacto en el "
-           "forecast a 18 meses. 4) Fuentes."),
+           "5. Relaciona la causa con lo calculado: gasto por cuenta (ACDOCA), impulsor físico (FINSSKF) y OPEX unitario. "
+           "Distingue si el OPEX unitario se mueve por el gasto o por el impulsor físico.\n"
+           "6. Indica qué proyecta el plan (ACDOCP) para los próximos meses con sus cifras.\n"
+           "7. Nunca inventes datos, fechas, equipos ni cifras.\n"
+           "Formato ejecutivo de 200 palabras como máximo: 1) Desviación del mes frente al presupuesto. 2) Causa "
+           "operacional. 3) Impacto en el forecast a 18 meses. 4) Fuentes."),
     "en": ("You are the AI FP&A analyst of Nodara Minería Chile and explain the OPEX deviations of the 18-month rolling "
-           "forecast to the Finance Manager.\n"
+           "forecast across the value chain (mine, plants and port) to the Finance Manager.\n"
            "Mandatory rules:\n"
-           "1. Answer EXCLUSIVELY in English: also translate the maintenance logs (written in Spanish); keep only SAP "
+           "1. Answer EXCLUSIVELY in English: also translate the operational logs (written in Spanish); keep only SAP "
            "codes, units and proper names untranslated.\n"
            "2. Do NOT calculate: never add, subtract, multiply, divide, average or convert figures. Use ONLY the figures of "
            "the «DETERMINISTIC CALCULATION» block, copied exactly as written with their unit, keeping the sign of every Δ "
            "(negative = decrease). If a figure is missing, say it is not available.\n"
-           "3. Explain the operational cause ONLY with the retrieved logs and cite them as [DOC-ID §section]. If there are "
+           "3. The deviation of the month is actual − budget (ACDOCP, category BUDG): report it first; the previous month "
+           "is context only.\n"
+           "4. Explain the operational cause ONLY with the retrieved logs and cite them as [DOC-ID §section]. If there are "
            "no logs for the period, say so and do not guess causes.\n"
-           "4. Link the cause to the calculated drivers: spend per account (ACDOCA), operating hours and tonnes (FINSSKF) "
-           "and unit OPEX.\n"
-           "5. State what the plan (ACDOCP) projects for the coming months with its figures.\n"
-           "6. Never invent data, dates, equipment or figures.\n"
-           "Executive format, at most 200 words: 1) Deviation of the month. 2) Operational cause. 3) Impact on the "
-           "18-month forecast. 4) Sources."),
+           "5. Link the cause to the calculation: spend per account (ACDOCA), physical driver (FINSSKF) and unit OPEX. "
+           "Tell whether the unit OPEX moves because of the spend or because of the physical driver.\n"
+           "6. State what the plan (ACDOCP) projects for the coming months with its figures.\n"
+           "7. Never invent data, dates, equipment or figures.\n"
+           "Executive format, at most 200 words: 1) Deviation of the month against the budget. 2) Operational cause. "
+           "3) Impact on the 18-month forecast. 4) Sources."),
     "pt": ("Você é o analista FP&A com IA da Nodara Minería Chile e explica ao Gerente Financeiro os desvios de OPEX do "
-           "Rolling Forecast de 18 meses.\n"
+           "Rolling Forecast de 18 meses na cadeia de valor (mina, plantas e porto).\n"
            "Regras obrigatórias:\n"
-           "1. Responda EXCLUSIVAMENTE em português do Brasil: traduza também os diários de manutenção (escritos em "
+           "1. Responda EXCLUSIVAMENTE em português do Brasil: traduza também os diários operacionais (escritos em "
            "espanhol); mantenha sem tradução apenas códigos SAP, unidades e nomes próprios.\n"
            "2. NÃO calcule: nunca some, subtraia, multiplique, divida, faça médias nem converta números. Use SOMENTE os "
            "números do bloco «CÁLCULO DETERMINÍSTICO», copiados exatamente como aparecem e com sua unidade, respeitando o "
            "sinal de cada Δ (negativo = redução). Se um número não estiver lá, diga que não está disponível.\n"
-           "3. Explique a causa operacional SOMENTE com os diários recuperados e cite-os como [DOC-ID §seção]. Se não "
+           "3. O desvio do mês é real − orçamento (ACDOCP, categoria BUDG): informe-o primeiro; o mês anterior é apenas "
+           "contexto.\n"
+           "4. Explique a causa operacional SOMENTE com os diários recuperados e cite-os como [DOC-ID §seção]. Se não "
            "houver diários do período, diga isso e não suponha causas.\n"
-           "4. Relacione a causa com os direcionadores calculados: gasto por conta (ACDOCA), horas operacionais e "
-           "toneladas (FINSSKF) e OPEX unitário.\n"
-           "5. Indique o que o plano (ACDOCP) projeta para os próximos meses com seus números.\n"
-           "6. Nunca invente dados, datas, equipamentos ou números.\n"
-           "Formato executivo de no máximo 200 palavras: 1) Desvio do mês. 2) Causa operacional. 3) Impacto no forecast "
-           "de 18 meses. 4) Fontes."),
+           "5. Relacione a causa com o cálculo: gasto por conta (ACDOCA), direcionador físico (FINSSKF) e OPEX unitário. "
+           "Diga se o OPEX unitário se move pelo gasto ou pelo direcionador físico.\n"
+           "6. Indique o que o plano (ACDOCP) projeta para os próximos meses com seus números.\n"
+           "7. Nunca invente dados, datas, equipamentos ou números.\n"
+           "Formato executivo de no máximo 200 palavras: 1) Desvio do mês frente ao orçamento. 2) Causa operacional. "
+           "3) Impacto no forecast de 18 meses. 4) Fontes."),
 }
 
 HUMAN_PROMPTS = {
@@ -103,12 +109,15 @@ ANSWER_TRANSLATION = ChatPromptTemplate.from_messages([
 LABELS = {
     "es": {
         "scope": "Centro de costo {rcntr} ({name}) · moneda de grupo {currency} (KSL)",
-        "frame": ("Período analizado: {period} (real, ACDOCA) · mes anterior: {previous} · línea base: promedio de "
-                  "{months} mes(es) real(es) previo(s), {first} a {last}"),
-        "frame_alone": "Período analizado: {period} (real, ACDOCA) · sin meses reales previos para comparar",
-        "OPEX": "OPEX total", "HOROP": "Horas operativas (FINSSKF HOROP)", "TONMOV": "Toneladas movidas (FINSSKF TONMOV)",
-        "USD_H": "OPEX unitario por hora", "USD_T": "OPEX unitario por tonelada",
-        "previous": "mes anterior", "baseline": "línea base", "share": "del OPEX",
+        "analyzed": "Período analizado: {period} (real, ACDOCA)",
+        "deviation": "desviación = real − presupuesto (ACDOCP/FINSSKF, categoría {budget}: {name})",
+        "no_budget": "sin presupuesto {budget} para el período",
+        "context": "contexto: mes anterior {previous}",
+        "no_previous": "sin mes real anterior",
+        "OPEX": "OPEX total",
+        "driver": "{name} (FINSSKF {stagr})",
+        "unit": "OPEX unitario en USD/{symbol} (OPEX / {stagr})",
+        "budget": "presupuesto", "previous": "mes anterior", "share": "del OPEX",
         "accounts": "Por cuenta de costo (ACDOCA, KSL):",
         "postings": "Mayores partidas del período (ACDOCA):",
         "posting": "{budat} · documento {belnr} · cuenta {racct} ({name}): {amount} «{text}»",
@@ -124,12 +133,15 @@ LABELS = {
     },
     "en": {
         "scope": "Cost center {rcntr} ({name}) · group currency {currency} (KSL)",
-        "frame": ("Analyzed period: {period} (actual, ACDOCA) · previous month: {previous} · baseline: average of "
-                  "{months} earlier actual month(s), {first} to {last}"),
-        "frame_alone": "Analyzed period: {period} (actual, ACDOCA) · no earlier actual month to compare with",
-        "OPEX": "Total OPEX", "HOROP": "Operating hours (FINSSKF HOROP)", "TONMOV": "Tonnes hauled (FINSSKF TONMOV)",
-        "USD_H": "Unit OPEX per hour", "USD_T": "Unit OPEX per tonne",
-        "previous": "previous month", "baseline": "baseline", "share": "of OPEX",
+        "analyzed": "Analyzed period: {period} (actual, ACDOCA)",
+        "deviation": "deviation = actual − budget (ACDOCP/FINSSKF, category {budget}: {name})",
+        "no_budget": "no {budget} budget for the period",
+        "context": "context: previous month {previous}",
+        "no_previous": "no earlier actual month",
+        "OPEX": "Total OPEX",
+        "driver": "{name} (FINSSKF {stagr})",
+        "unit": "Unit OPEX in USD/{symbol} (OPEX / {stagr})",
+        "budget": "budget", "previous": "previous month", "share": "of OPEX",
         "accounts": "By cost element (ACDOCA, KSL):",
         "postings": "Largest postings of the period (ACDOCA):",
         "posting": "{budat} · document {belnr} · account {racct} ({name}): {amount} «{text}»",
@@ -145,13 +157,15 @@ LABELS = {
     },
     "pt": {
         "scope": "Centro de custo {rcntr} ({name}) · moeda do grupo {currency} (KSL)",
-        "frame": ("Período analisado: {period} (real, ACDOCA) · mês anterior: {previous} · linha de base: média de "
-                  "{months} mês(es) real(is) anterior(es), {first} a {last}"),
-        "frame_alone": "Período analisado: {period} (real, ACDOCA) · sem meses reais anteriores para comparar",
-        "OPEX": "OPEX total", "HOROP": "Horas operacionais (FINSSKF HOROP)",
-        "TONMOV": "Toneladas movimentadas (FINSSKF TONMOV)",
-        "USD_H": "OPEX unitário por hora", "USD_T": "OPEX unitário por tonelada",
-        "previous": "mês anterior", "baseline": "linha de base", "share": "do OPEX",
+        "analyzed": "Período analisado: {period} (real, ACDOCA)",
+        "deviation": "desvio = real − orçamento (ACDOCP/FINSSKF, categoria {budget}: {name})",
+        "no_budget": "sem orçamento {budget} para o período",
+        "context": "contexto: mês anterior {previous}",
+        "no_previous": "sem mês real anterior",
+        "OPEX": "OPEX total",
+        "driver": "{name} (FINSSKF {stagr})",
+        "unit": "OPEX unitário em USD/{symbol} (OPEX / {stagr})",
+        "budget": "orçamento", "previous": "mês anterior", "share": "do OPEX",
         "accounts": "Por conta de custo (ACDOCA, KSL):",
         "postings": "Maiores lançamentos do período (ACDOCA):",
         "posting": "{budat} · documento {belnr} · conta {racct} ({name}): {amount} «{text}»",
@@ -166,8 +180,7 @@ LABELS = {
         "na": "n/d",
     },
 }
-# (unit suffix or prefix, decimals) per metric; cost elements and OPEX are USD amounts.
-UNITS = {"OPEX": ("USD", 0), "HOROP": ("h", 0), "TONMOV": ("t", 0), "USD_H": ("USD/h", 2), "USD_T": ("USD/t", 4)}
+CURRENCY = "USD"  # cost elements, OPEX and the numerator of every unit OPEX
 
 
 def _number(value: float | None, decimals: int, language: str, signed: bool = False) -> str:
@@ -178,25 +191,25 @@ def _number(value: float | None, decimals: int, language: str, signed: bool = Fa
     return text.translate(str.maketrans(",.", ".,")) if language in ("es", "pt") else text
 
 
-def _quantity(value: float | None, metric: str, language: str, signed: bool = False) -> str:
-    unit, decimals = UNITS.get(metric, UNITS["OPEX"])
+def _quantity(value: float | None, unit: str, decimals: int, language: str, signed: bool = False) -> str:
+    """'USD 1.234' (currency first) or '1.234 h' / '5,0094 USD/WMT' (unit after the number)."""
     number = _number(value, decimals, language, signed)
-    if value is None or unit != "USD":
+    if value is None or unit != CURRENCY:
         return number if value is None else f"{number} {unit}"
-    return f"{number[0]}USD {number[1:]}" if signed and number[0] in "+-" else f"USD {number}"
+    return f"{number[0]}{CURRENCY} {number[1:]}" if signed and number[0] in "+-" else f"{CURRENCY} {number}"
 
 
 def _percent(value: float | None, language: str) -> str:
     return LABELS[language]["na"] if value is None else f"{_number(value, 1, language, signed=True)} %"
 
 
-def _metric_line(name: str, metric: str, values: dict, language: str) -> str:
+def _metric_line(name: str, values: dict, unit: str, decimals: int, language: str) -> str:
     labels = LABELS[language]
-    line = f"- {name}: {_quantity(values['current'], metric, language)}"
-    for key in ("previous", "baseline"):
+    line = f"- {name}: {_quantity(values['current'], unit, decimals, language)}"
+    for key in ("budget", "previous"):
         if values[key] is not None:
-            line += (f" | {labels[key]} {_quantity(values[key], metric, language)} "
-                     f"(Δ {_quantity(values[f'delta_{key}'], metric, language, signed=True)}; "
+            line += (f" | {labels[key]} {_quantity(values[key], unit, decimals, language)} "
+                     f"(Δ {_quantity(values[f'delta_{key}'], unit, decimals, language, signed=True)}; "
                      f"{_percent(values[f'delta_{key}_pct'], language)})")
     if values.get("share_pct") is not None:
         line += f" | {_number(values['share_pct'], 1, language)} % {labels['share']}"
@@ -205,34 +218,41 @@ def _metric_line(name: str, metric: str, values: dict, language: str) -> str:
 
 def format_facts(analysis: dict, language: str) -> str:
     """Deterministic facts block (every figure computed by Trino), worded in the answer language."""
-    labels, baseline = LABELS[language], analysis["baseline"]
+    labels, opex_values = LABELS[language], analysis["opex"]
+    frame = [labels["analyzed"].format(period=analysis["period"])]
+    frame.append(labels["deviation"].format(budget=analysis["budget_category"], name=analysis["budget_texts"][language])
+                 if opex_values["budget"] is not None else labels["no_budget"].format(budget=analysis["budget_category"]))
+    frame.append(labels["context"].format(previous=analysis["previous_period"]) if analysis["previous_period"]
+                 else labels["no_previous"])
     lines = [labels["scope"].format(rcntr=analysis["rcntr"], name=analysis["rcntr_texts"][language],
-                                    currency=analysis["currency"])]
-    lines.append(labels["frame"].format(period=analysis["period"], previous=analysis["previous_period"],
-                                        months=baseline["months"], first=baseline["from"], last=baseline["to"])
-                 if baseline["months"] else labels["frame_alone"].format(period=analysis["period"]))
-    lines += [_metric_line(labels[metric], metric, values, language) for metric, values in analysis["totals"].items()]
+                                    currency=analysis["currency"]), " · ".join(frame),
+             _metric_line(labels["OPEX"], opex_values, CURRENCY, 0, language)]
+    lines += [_metric_line(labels["driver"].format(name=d["texts"][language], stagr=d["stagr"]), d, d["symbol"], 0,
+                           language) for d in analysis["drivers"]]
+    lines += [_metric_line(labels["unit"].format(symbol=u["symbol"], stagr=u["stagr"]), u, f"{CURRENCY}/{u['symbol']}",
+                           u["decimals"], language) for u in analysis["unit_costs"]]
     lines.append(labels["accounts"])
-    lines += [_metric_line(f"{a['racct']} {a['texts'][language]}", "OPEX", a, language) for a in analysis["accounts"]]
+    lines += [_metric_line(f"{a['racct']} {a['texts'][language]}", a, CURRENCY, 0, language) for a in analysis["accounts"]]
     lines.append(labels["postings"])
-    lines += [f"- {labels['posting'].format(budat=p['budat'], belnr=p['belnr'], racct=p['racct'], text=p['sgtxt'], name=texts(ACCOUNTS, p['racct'])[language], amount=_quantity(p['ksl'], 'OPEX', language))}"
+    lines += [f"- {labels['posting'].format(budat=p['budat'], belnr=p['belnr'], racct=p['racct'], text=p['sgtxt'], name=texts(ACCOUNTS, p['racct'])[language], amount=_quantity(p['ksl'], CURRENCY, 0, language))}"
               for p in analysis["top_postings"]]
     plan = analysis["forecast"]
     if plan.get("months"):
+        unit, decimals = f"{CURRENCY}/{UNITS.get(plan['runit'], plan['runit'])}", plan["decimals"]
         lines.append(labels["plan"].format(category=analysis["category"], name=analysis["category_texts"][language],
                                            months=plan["months"], first=plan["first_period"], last=plan["last_period"]))
         lines.append("- " + labels["plan_first"].format(
-            period=plan["first_period"], opex=_quantity(plan["first_opex"], "OPEX", language),
-            unit=_quantity(plan["first_usd_per_hour"], "USD_H", language)))
+            period=plan["first_period"], opex=_quantity(plan["first_opex"], CURRENCY, 0, language),
+            unit=_quantity(plan["first_unit_cost"], unit, decimals, language)))
         lines.append("- " + labels["plan_last"].format(
-            period=plan["last_period"], opex=_quantity(plan["last_opex"], "OPEX", language),
-            unit=_quantity(plan["last_usd_per_hour"], "USD_H", language),
+            period=plan["last_period"], opex=_quantity(plan["last_opex"], CURRENCY, 0, language),
+            unit=_quantity(plan["last_unit_cost"], unit, decimals, language),
             pct=_percent(plan["last_vs_period_pct"], language), analyzed=analysis["period"]))
         if plan["stable_from"]:
             lines.append("- " + labels["plan_stable"].format(period=plan["stable_from"]))
         lines.append("- " + labels["plan_total"].format(
-            total=_quantity(plan["total_opex"], "OPEX", language),
-            unit=_quantity(plan["horizon_usd_per_hour"], "USD_H", language)))
+            total=_quantity(plan["total_opex"], CURRENCY, 0, language),
+            unit=_quantity(plan["horizon_unit_cost"], unit, decimals, language)))
     else:
         lines.append(labels["no_plan"].format(category=analysis["category"] or "-", period=analysis["period"]))
     return "\n".join(lines)
@@ -282,7 +302,7 @@ def answer_question(question: str, language: str = "es", engine: str = "nim", rc
     analysis = opex.analyze(rcntr, category, period)
     observability.span(trace, "trino · OPEX unitario (determinista)", started_at,
                        {"rcntr": rcntr, "category": category, "period": period or "latest"},
-                       {"period": analysis["period"], "totals": analysis["totals"]})
+                       {"period": analysis["period"], "opex": analysis["opex"], "unit_costs": analysis["unit_costs"]})
     timings["analysis_ms"] = _elapsed_ms(start)
 
     # 2 · Logs of exactly that cost center and month (metadata pre-filter, then similarity).

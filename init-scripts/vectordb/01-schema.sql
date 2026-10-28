@@ -1,7 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Nodara Rolling Forecast · Knowledge base (isolated pgvector instance — operational logs only)
--- Maintenance logs (bitácoras, Spanish originals) chunked for retrieval. Every vector carries the SAP
--- coordinates it explains — fiscal year (Año = GJAHR), month (Mes = MONAT) and cost center (RCNTR) —
+-- Bitácoras (maintenance, operations and metallurgy logs; Spanish originals) chunked for retrieval.
+-- Every vector carries the SAP coordinates it explains — fiscal year (Año = GJAHR), month (Mes = MONAT)
+-- and cost center (RCNTR) —
 -- as MANDATORY metadata: retrieval is pre-filtered on them before the similarity ranking, so the AI
 -- only reads the logs of the period and cost center whose variance it explains.
 -- Embeddings are produced in-enclave by the backend (Ollama nomic-embed-text, 768-d): no external
@@ -13,7 +14,7 @@ CREATE SCHEMA kb;
 CREATE TABLE kb.documents (
     doc_id         text PRIMARY KEY,
     title          text NOT NULL,
-    doc_type       text NOT NULL CHECK (doc_type IN ('maintenance_log')),
+    doc_type       text NOT NULL CHECK (doc_type IN ('maintenance_log', 'operations_log')),
     author_role    text NOT NULL,
     site           text NOT NULL,
     language       char(2) NOT NULL,

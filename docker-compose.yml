@@ -1,0 +1,469 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Nodara Rolling Forecast · OPEX a 18 meses · AI Lakehouse (simulación air-gapped)
+#
+#   S/4HANA (PG: ACDOCA · ACDOCP · FINSSKF) ─WAL─▶ Debezium ─▶ Kafka ─▶ delta-sink ─▶ Delta Lake @ MinIO
+#                                                                     ├─ Trino (bronze + silver: cálculo determinista)
+#                                                                     └─ Unity Catalog (gobierno)
+#   Bitácoras (pgvector · Año/Mes/RCNTR) ─┐                           ┌─▶ Ollama (embeddings + LLM local)
+#   OPEX unitario vía Trino ──────────────┼─▶ backend FastAPI + LangChain ┼─▶ egress-proxy ─▶ NVIDIA NIM
+#                                         │                           └─▶ Langfuse v2 (trazas)
+#                                         └─▶ frontend Next.js (única entrada del operador)
+#
+# Redes:
+#   rollingf-net    internal → plano de datos/IA. Sin salida directa a Internet (air-gap).
+#   rollingf-kb     internal → segmento exclusivo backend ↔ vector-db (KB aislada).
+#   rollingf-obs    internal → segmento exclusivo langfuse ↔ langfuse-db (observabilidad).
+#   rollingf-edge   bridge   → plano de operación: solo servicios con puerto publicado
+#                              en 127.0.0.1. Docker no publica puertos en redes internal.
+#   rollingf-egress bridge   → salida controlada: solo egress-proxy (allowlist de dominios).
+#   rollingf-uplink bridge   → importación controlada de modelos (perfil "bootstrap").
+# Nombres de proyecto, contenedores, redes e imágenes propios: convive con nodara-br-rag sin pisarlo.
+# ─────────────────────────────────────────────────────────────────────────────
+name: nodara-rollingf
+
+services:
+  # ═══ 1 · Capa transaccional: SAP S/4HANA simulado (PostgreSQL relacional) ════
+  s4hana-db:
+    image: postgres:16.15-alpine
+    container_name: rollingf-s4hana-db
+    restart: unless-stopped
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+    environment:
+      POSTGRES_DB: s4hana
+      POSTGRES_USER: ${S4_DB_ADMIN_USER:?run make env}
+      POSTGRES_PASSWORD: ${S4_DB_ADMIN_PASSWORD:?run make env}
+      S4_DEBEZIUM_PASSWORD: ${S4_DEBEZIUM_PASSWORD:?run make env}
+      S4_TRINO_PASSWORD: ${S4_TRINO_PASSWORD:?run make env}
+    volumes:
+      - s4hana-data:/var/lib/postgresql/data
+      - ./init-scripts/s4hana:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${S4_DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d s4hana"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [rollingf-net, rollingf-edge]
+
+  # ═══ 2 · Capa CDC: Kafka (KRaft, sin ZooKeeper) + Debezium ═══════════════════
+  kafka:
+    image: apache/kafka:4.3.2
+    container_name: rollingf-kafka
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: KzAIRliyRAq15uJaYOTaJg
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 20s
+    networks: [rollingf-net]
+
+  debezium:
+    image: quay.io/debezium/connect:3.6.3.Final
+    container_name: rollingf-debezium
+    restart: unless-stopped
+    depends_on:
+      kafka: { condition: service_healthy }
+      s4hana-db: { condition: service_healthy }
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: nodara-connect
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      HEAP_OPTS: -Xms256m -Xmx768m
+      # Secrets are resolved at runtime as ${env:...}; they never land in connect-configs.
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      S4_DEBEZIUM_PASSWORD: ${S4_DEBEZIUM_PASSWORD:?run make env}
+    ports:
+      - "127.0.0.1:${DEBEZIUM_PORT:-8083}:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    networks: [rollingf-net, rollingf-edge]
+
+  debezium-init:
+    image: curlimages/curl:8.23.0
+    container_name: rollingf-debezium-init
+    depends_on:
+      debezium: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "/cdc/register-connectors.sh"]
+    environment:
+      CONNECT_URL: http://debezium:8083
+    volumes:
+      - ./cdc:/cdc:ro
+    restart: "no"
+    networks: [rollingf-net]
+
+  # ═══ 3 · Capa Lakehouse: MinIO (S3) + Delta Lake + Unity Catalog + Trino ═════
+  minio:
+    # MinIO dejó de publicar imágenes oficiales (2025): fork comunitario mantenido.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    container_name: rollingf-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?run make env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run make env}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [rollingf-net, rollingf-edge]
+
+  minio-init:
+    # Buckets `lakehouse` + `raw-docs` (bitácoras originales versionadas) y su registro en Unity Catalog.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    container_name: rollingf-minio-init
+    depends_on:
+      minio: { condition: service_healthy }
+      unity-catalog: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "/opt/nodara/init-lakehouse.sh"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?run make env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run make env}
+      LAKEHOUSE_S3_ACCESS_KEY: ${LAKEHOUSE_S3_ACCESS_KEY:?run make env}
+      LAKEHOUSE_S3_SECRET_KEY: ${LAKEHOUSE_S3_SECRET_KEY:?run make env}
+      UC_API: http://unity-catalog:8080/api/2.1/unity-catalog
+    volumes:
+      - ./lakehouse/minio/init-lakehouse.sh:/opt/nodara/init-lakehouse.sh:ro
+      - ./knowledge/raw-docs:/seed/raw-docs:ro
+    restart: "no"
+    networks: [rollingf-net]
+
+  unity-catalog:
+    image: unitycatalog/unitycatalog:v0.7.0
+    container_name: rollingf-unity-catalog
+    restart: unless-stopped
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx512m
+    volumes:
+      - unity-catalog-db:/home/unitycatalog/etc/db
+    ports:
+      - "127.0.0.1:${UNITY_CATALOG_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/2.1/unity-catalog/catalogs >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 15s
+    networks: [rollingf-net, rollingf-edge]
+
+  trino:
+    image: trinodb/trino:484
+    container_name: rollingf-trino
+    restart: unless-stopped
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+      s4hana-db: { condition: service_healthy }
+    environment:
+      LAKEHOUSE_S3_ACCESS_KEY: ${LAKEHOUSE_S3_ACCESS_KEY:?run make env}
+      LAKEHOUSE_S3_SECRET_KEY: ${LAKEHOUSE_S3_SECRET_KEY:?run make env}
+      S4_TRINO_PASSWORD: ${S4_TRINO_PASSWORD:?run make env}
+    volumes:
+      - ./lakehouse/trino/catalog:/etc/trino/catalog:ro
+    ports:
+      - "127.0.0.1:${TRINO_PORT:-8080}:8080"
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/lib/trino/bin/health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [rollingf-net, rollingf-edge]
+
+  delta-sink:
+    build: ./lakehouse/delta-sink
+    image: nodara-rollingf/delta-sink:0.2.0
+    container_name: rollingf-delta-sink
+    restart: unless-stopped
+    depends_on:
+      kafka: { condition: service_healthy }
+      trino: { condition: service_healthy }
+      unity-catalog: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC_PATTERN: ^s4hana\.sap\..+
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${LAKEHOUSE_S3_ACCESS_KEY:?run make env}
+      S3_SECRET_KEY: ${LAKEHOUSE_S3_SECRET_KEY:?run make env}
+      TRINO_HOST: trino
+      UC_API: http://unity-catalog:8080/api/2.1/unity-catalog
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/heartbeat') > 60)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    networks: [rollingf-net]
+
+  # ═══ 4 · Capa base de conocimiento: pgvector aislado (solo bitácoras) ════════
+  vector-db:
+    image: pgvector/pgvector:0.8.7-pg16
+    container_name: rollingf-vector-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowledge
+      POSTGRES_USER: ${VECTOR_DB_USER:?run make env}
+      POSTGRES_PASSWORD: ${VECTOR_DB_PASSWORD:?run make env}
+    volumes:
+      - vector-data:/var/lib/postgresql/data
+      - ./init-scripts/vectordb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${VECTOR_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d knowledge"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [rollingf-kb, rollingf-edge]
+
+  # ═══ 5 · Capa IA & backend: Ollama (LLM local) + orquestador FastAPI ═════════
+  ollama:
+    image: ollama/ollama:0.40.11
+    container_name: rollingf-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_NO_CLOUD: "true"  # air-gap también a nivel de aplicación: sin modelos remotos
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [rollingf-net]
+
+  ollama-bootstrap:
+    # "Sneakernet" simulado: única vía de entrada de modelos al enclave. Solo con
+    # `make models`; comparte el volumen de modelos con el Ollama air-gapped.
+    image: ollama/ollama:0.40.11
+    profiles: ["bootstrap"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve >/tmp/ollama-serve.log 2>&1 &
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        for model in "$$OLLAMA_CHAT_MODEL" "$$OLLAMA_EMBED_MODEL"; do
+          echo ">> importando $$model"
+          ollama pull "$$model" || exit 1
+        done
+        ollama list
+    environment:
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.1:8b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: "no"
+    networks: [rollingf-uplink]
+
+  backend:
+    build: ./backend
+    image: nodara-rollingf/backend:0.1.0
+    container_name: rollingf-backend
+    restart: unless-stopped
+    depends_on:
+      vector-db: { condition: service_healthy }
+      trino: { condition: service_healthy }
+      ollama: { condition: service_healthy }
+      egress-proxy: { condition: service_healthy }
+      langfuse: { condition: service_started }
+    environment:
+      VECTOR_DB_HOST: vector-db
+      VECTOR_DB_USER: ${VECTOR_DB_USER:?run make env}
+      VECTOR_DB_PASSWORD: ${VECTOR_DB_PASSWORD:?run make env}
+      TRINO_HOST: trino
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.1:8b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      # Motor cloud (NVIDIA NIM): solo sale del enclave por el gateway con allowlist.
+      LLM_DEFAULT_ENGINE: ${LLM_DEFAULT_ENGINE:-nim}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NIM_MODEL: ${NIM_MODEL:-openai/gpt-oss-20b}
+      NIM_TIMEOUT_S: ${NIM_TIMEOUT_S:-45}
+      NIM_REASONING_EFFORT: ${NIM_REASONING_EFFORT:-low}
+      HTTPS_PROXY: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,ollama,trino,vector-db,langfuse
+      # Observabilidad GenAI (Langfuse v2 autoalojado: las trazas no salen del enclave).
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?run make env}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?run make env}
+      LANGFUSE_PUBLIC_URL: http://localhost:${LANGFUSE_PORT:-3001}
+      TRACE_USER_ID: ${TRACE_USER_ID:-gerente_finanzas@nodara.com}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [rollingf-net, rollingf-kb]
+
+  egress-proxy:
+    # Gateway de salida controlada: default deny; solo HTTPS a los dominios de egress/allowlist.txt
+    # (NVIDIA NIM). Único servicio de runtime con ruta a Internet.
+    image: ubuntu/squid:6.6-24.04_edge
+    container_name: rollingf-egress-proxy
+    restart: unless-stopped
+    volumes:
+      - ./egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./egress/allowlist.txt:/etc/squid/allowlist.txt:ro
+    healthcheck:
+      test: ["CMD", "squid", "-k", "check"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [rollingf-net, rollingf-egress]
+
+  # ═══ 5b · Observabilidad GenAI: Langfuse v2 autoalojado ══════════════════════
+  langfuse-db:
+    image: postgres:16.15-alpine
+    container_name: rollingf-langfuse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:?run make env}
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [rollingf-obs]
+
+  langfuse:
+    image: langfuse/langfuse:2.95.11
+    container_name: rollingf-langfuse
+    restart: unless-stopped
+    depends_on:
+      langfuse-db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?run make env}@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3001}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?run make env}
+      SALT: ${LANGFUSE_SALT:?run make env}
+      HOSTNAME: 0.0.0.0  # Next.js escucha en todas las interfaces (healthcheck por loopback)
+      TELEMETRY_ENABLED: "false"
+      AUTH_DISABLE_SIGNUP: "true"
+      # Inicialización headless: organización, proyecto, API keys y usuario admin de .env
+      LANGFUSE_INIT_ORG_ID: nodara
+      LANGFUSE_INIT_ORG_NAME: Nodara
+      LANGFUSE_INIT_PROJECT_ID: nodara-rollingf
+      LANGFUSE_INIT_PROJECT_NAME: Nodara Rolling Forecast
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?run make env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?run make env}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_ADMIN_EMAIL:?run make env}
+      LANGFUSE_INIT_USER_NAME: Nodara Admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_ADMIN_PASSWORD:?run make env}
+    ports:
+      - "127.0.0.1:${LANGFUSE_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/public/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    networks: [rollingf-net, rollingf-obs, rollingf-edge]
+
+  # ═══ 6 · Capa frontend: consola del Gerente de Finanzas (Next.js + Tailwind) ══
+  frontend:
+    build: ./frontend
+    image: nodara-rollingf/frontend:0.1.0
+    container_name: rollingf-frontend
+    restart: unless-stopped
+    depends_on:
+      backend: { condition: service_healthy }
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [rollingf-net, rollingf-edge]
+
+  ui-test:
+    # QA de UI bajo demanda (perfil "qa", `make ui-test`): Playwright contra el frontend real.
+    build: ./frontend/e2e
+    image: nodara-rollingf/ui-test:0.1.0
+    profiles: ["qa"]
+    depends_on:
+      frontend: { condition: service_healthy }
+    environment:
+      BASE_URL: http://frontend:3000
+    shm_size: 512m
+    restart: "no"
+    networks: [rollingf-edge]
+
+networks:
+  rollingf-net:
+    name: rollingf-net
+    internal: true
+  rollingf-kb:
+    name: rollingf-kb
+    internal: true
+  rollingf-edge:
+    name: rollingf-edge
+    driver_opts:
+      # Linux nativo: sin NAT de salida → el plano de operación tampoco llega a Internet.
+      # (Docker Desktop ignora esta opción; por eso IA y streaming viven solo en redes internal.)
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+  rollingf-uplink:
+    name: rollingf-uplink
+  rollingf-obs:
+    name: rollingf-obs
+    internal: true
+  rollingf-egress:
+    # Única red con salida a Internet en runtime: solo la usa egress-proxy.
+    name: rollingf-egress
+
+volumes:
+  s4hana-data:
+  vector-data:
+  kafka-data:
+  minio-data:
+  unity-catalog-db:
+  ollama-models:
+  langfuse-db-data:

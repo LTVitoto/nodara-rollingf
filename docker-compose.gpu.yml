@@ -1,0 +1,11 @@
+# Override opcional: acelera Ollama con GPU NVIDIA (requiere runtime nvidia en Docker).
+# Activar con COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml en .env
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

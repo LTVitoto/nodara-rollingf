@@ -8,7 +8,7 @@ language: es
 classification: SYNTHETIC-SIMULATION
 gjahr: 2026
 monat: 10
-rcntr: RCNTR_CON_FLOT
+rcntr: CON_FLOT
 ---
 
 # Bitácora de justificación · Flotación · octubre 2026
@@ -23,10 +23,10 @@ reajuste del contrato por el alza de sus materias primas (disulfuro de carbono e
 marítimo. La tarifa pasó de USD 3,18 por kilo a USD 4,05 por kilo, un alza de 27,4 %. Abastecimiento validó el
 reajuste contra el índice pactado; no hubo compras de emergencia ni cambio de producto.
 
-## Insumo afectado: RACCT_REACTIVOS (efecto precio P)
+## Insumo afectado: REACTIVOS (efecto precio P)
 
-La dosificación del colector se mantuvo en el estándar metalúrgico de 23,5 gramos por tonelada (23,3 g/t
-medidos en el mes), sin pérdida de recuperación. Por eso la desviación de la cuenta RACCT_REACTIVOS es un efecto
+La dosificación del colector se mantuvo en el estándar metalúrgico de 23,5 gramos por tonelada (23,7 g/t
+medidos en el mes), sin pérdida de recuperación. Por eso la desviación de la cuenta REACTIVOS es un efecto
 precio puro: se usó la cantidad esperada para el mineral tratado, pero cada kilo costó más. No hay efecto de
 eficiencia en el consumo de xantato.
 

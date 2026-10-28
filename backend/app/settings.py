@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     langfuse_project_id: str = "nodara-rollingf"
     trace_user_id: str = "gerente_finanzas@nodara.com"
 
-    rag_top_k: int = 4
+    rag_top_k: int = 5  # a whole bitácora (up to 5 sections) of the filtered RCNTR and month
 
 
 @lru_cache

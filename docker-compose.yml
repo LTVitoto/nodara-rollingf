@@ -232,6 +232,23 @@ services:
       start_period: 30s
     networks: [rollingf-net]
 
+  trino-init:
+    # Capa gold (vistas P x Q de OPEX C1): DDL versionado en lakehouse/trino/gold, aplicado antes del backend
+    # en cuanto delta-sink publica las vistas silver.
+    image: trinodb/trino:484
+    container_name: rollingf-trino-init
+    depends_on:
+      trino: { condition: service_healthy }
+      delta-sink: { condition: service_healthy }
+    entrypoint: ["bash", "/init-gold.sh"]
+    environment:
+      TRINO_SERVER: http://trino:8080
+    volumes:
+      - ./lakehouse/trino/init-gold.sh:/init-gold.sh:ro
+      - ./lakehouse/trino/gold:/gold:ro
+    restart: "no"
+    networks: [rollingf-net]
+
   # ═══ 4 · Capa base de conocimiento: pgvector aislado (solo bitácoras) ════════
   vector-db:
     image: pgvector/pgvector:0.8.7-pg16
@@ -302,6 +319,7 @@ services:
     depends_on:
       vector-db: { condition: service_healthy }
       trino: { condition: service_healthy }
+      trino-init: { condition: service_completed_successfully }  # gold views exist before the backend starts
       ollama: { condition: service_healthy }
       egress-proxy: { condition: service_healthy }
       langfuse: { condition: service_started }

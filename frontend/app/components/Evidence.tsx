@@ -2,7 +2,7 @@
 
 // Evidence behind an answer: the deterministic P x Q calculation of Trino for the analyzed month (every
 // account against the budget, with the origin of the deviation) and the operational logs retrieved from
-// pgvector with their mandatory metadata (Año, Mes, RCNTR).
+// pgvector with their mandatory metadata (Año, Mes, RCNTR) and the cost centers each log covers (Alcance).
 import { formatMonth, formatNumber } from "../format";
 import { useI18n } from "../i18n";
 import type { Analysis, Source } from "../types";
@@ -51,6 +51,11 @@ export function Sources({ sources, filter }: { sources: Source[]; filter: Record
                 <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">{t.sources.year} {source.metadata["Año"]}</span>
                 <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">{t.sources.month} {source.metadata["Mes"]}</span>
                 <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">RCNTR {source.metadata["RCNTR"]}</span>
+                {Array.isArray(source.metadata["Alcance"]) && source.metadata["Alcance"].length > 1 ? (
+                  <span data-testid="source-scope" className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">
+                    {t.sources.scope} {source.metadata["Alcance"].join(" · ")}
+                  </span>
+                ) : null}
                 <span className="px-1 py-0.5 text-slate-500">{t.sources.similarity} {formatNumber(source.similarity, t.locale, 2)}</span>
               </div>
               <div className="mt-1 font-mono text-[11px] text-slate-600">{source.source_uri}</div>

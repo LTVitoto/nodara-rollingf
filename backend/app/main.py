@@ -29,6 +29,7 @@ class UserFacingError(RuntimeError):
 async def lifespan(_: FastAPI):
     knowledge.open_pool()
     threading.Thread(target=llm.warm_up, name="model-warm-up", daemon=True).start()
+    threading.Thread(target=opex.warm_up, name="lakehouse-cache-warm-up", daemon=True).start()
     yield
     observability.flush()
     knowledge.close_pool()
@@ -89,6 +90,7 @@ def status() -> dict:
     return {"knowledge_base": _probe(knowledge.stats),
             "s4hana_live": _probe(lakehouse.s4_live_summary),
             "lakehouse_cdc": _probe(lakehouse.cdc_freshness),
+            "lakehouse_cache": lakehouse.cache_stats(),
             "llm": _probe(_engines),
             "observability": {"ok": observability.healthy(), "langfuse_url": get_settings().langfuse_public_url}}
 
@@ -101,7 +103,7 @@ def cost_centers(language: str = "es") -> dict:
 
 
 @app.get("/api/v1/opex/timeline")
-def timeline(rcntr: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,20}$")] = None,
+def timeline(rcntr: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,10}$")] = None,
              category: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,10}$")] = None,
              language: str = "es") -> dict:
     """Continuous monthly OPEX per account: actuals (ACDOCA) against the budget (ACDOCP · BUDG) + plan (ACDOCP),

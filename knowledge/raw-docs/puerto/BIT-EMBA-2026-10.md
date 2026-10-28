@@ -8,7 +8,7 @@ language: es
 classification: SYNTHETIC-SIMULATION
 gjahr: 2026
 monat: 10
-rcntr: RCNTR_PTO_EMBA
+rcntr: PTO_EMBA
 ---
 
 # Bitácora de justificación · Embarque · octubre 2026
@@ -23,11 +23,11 @@ marejadas en la bahía, y ninguno alcanzó a atracar dentro del mes. Las tonelad
 a 102.300 toneladas húmedas (WMT) del plan. El concentrado filtrado del mes, 91.259 WMT, quedó acopiado en la
 cancha del puerto.
 
-## Costos fijos que se mantuvieron: RACCT_LABOR y RACCT_MANTEN
+## Costos fijos que se mantuvieron: LABOR y MANTEN
 
 Las cuadrillas de estiba y los contratistas de mantención del muelle trabajan con turnos y contratos fijos, por
-lo que sus horas y tarifas no cambiaron: 6.014 horas hombre de estiba (RACCT_LABOR) y 1.395 horas de mantención
-(RACCT_MANTEN). El arriendo de la cancha de concentrado (USD 521.000) y la depreciación del muelle también
+lo que sus horas y tarifas no cambiaron: 6.014 horas hombre de estiba (LABOR) y 1.395 horas de mantención
+(MANTEN). El arriendo de la cancha de concentrado (USD 521.000) y la depreciación del muelle también
 siguieron sin cambios. Estas cuentas no tienen efecto precio ni de eficiencia: su gasto es el del presupuesto.
 
 ## Efecto en el costo unitario

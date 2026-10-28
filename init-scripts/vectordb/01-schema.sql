@@ -2,7 +2,8 @@
 -- Nodara Rolling Forecast · Knowledge base (isolated pgvector instance — operational logs only)
 -- Bitácoras (maintenance, operations and metallurgy logs; Spanish originals) chunked for retrieval.
 -- Every vector carries the SAP coordinates it explains — fiscal year (Año = GJAHR), month (Mes = MONAT)
--- and cost center (RCNTR) —
+-- and cost center (RCNTR, plus RCNTR_SCOPE: every cost center the log explains, e.g. the downstream ones of a
+-- mill stop) —
 -- as MANDATORY metadata: retrieval is pre-filtered on them before the similarity ranking, so the AI
 -- only reads the logs of the period and cost center whose variance it explains.
 -- Embeddings are produced in-enclave by the backend (Ollama nomic-embed-text, 768-d): no external
@@ -31,13 +32,17 @@ CREATE TABLE kb.chunks (
     content         text NOT NULL,
     gjahr           smallint NOT NULL CHECK (gjahr BETWEEN 2000 AND 2100),       -- Año (fiscal year)
     monat           smallint NOT NULL CHECK (monat BETWEEN 1 AND 12),            -- Mes (period, K4 = month)
-    rcntr           varchar(20) NOT NULL CHECK (rcntr ~ '^[A-Z0-9_]{1,20}$'),    -- RCNTR (cost center)
+    rcntr           varchar(10) NOT NULL CHECK (rcntr ~ '^[A-Z0-9_]{1,10}$'),    -- RCNTR (cost center that records it)
+    rcntr_scope     varchar(10)[] NOT NULL,                                       -- cost centers it explains (domino effect)
     embedding       vector(768),
     embedding_model text,
     embedded_at     timestamptz,
-    UNIQUE (doc_id, chunk_no)
+    UNIQUE (doc_id, chunk_no),
+    CHECK (rcntr = ANY (rcntr_scope)),
+    CHECK (array_to_string(rcntr_scope, ',') ~ '^[A-Z0-9_]{1,10}(,[A-Z0-9_]{1,10})*$')
 );
 
 CREATE INDEX chunks_sap_coordinates ON kb.chunks (rcntr, gjahr, monat);
+CREATE INDEX chunks_rcntr_scope ON kb.chunks USING gin (rcntr_scope);
 CREATE INDEX chunks_embedding_hnsw ON kb.chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX chunks_content_fts ON kb.chunks USING gin (to_tsvector('spanish', content));

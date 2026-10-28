@@ -26,17 +26,17 @@ La deuda del punto 4 se consolida en [TECH_DEBT.md](TECH_DEBT.md) (ID, impacto, 
   PostgreSQL + pgvector aislado (solo bitácoras) · FastAPI + LangChain + Ollama · Next.js + TailwindCSS (gráfico SVG
   propio, sin librerías) · NVIDIA NIM (cloud) · Langfuse v2 autoalojado · gateway de egress (squid).
 - **Seed de producción, ESTRICTO** (sociedad/área de control `CL01`, moneda de grupo USD) y nada más:
-  - **12 centros de costo**: `RCNTR_MIN_PERF`, `RCNTR_MIN_TRON`, `RCNTR_MIN_CARG`, `RCNTR_MIN_TRAN` (mina);
-    `RCNTR_CON_MOLI`, `RCNTR_CON_FLOT`, `RCNTR_CON_RELA` (concentradora); `RCNTR_LIX_RIEG`, `RCNTR_LIX_SX`,
-    `RCNTR_LIX_EW` (lixiviación); `RCNTR_PTO_FILT`, `RCNTR_PTO_EMBA` (puerto). Cada uno con 4–5 cuentas `RACCT_*` y
+  - **12 centros de costo**: `MIN_PERF`, `MIN_TRON`, `MIN_CARG`, `MIN_TRAN` (mina);
+    `CON_MOLI`, `CON_FLOT`, `CON_RELA` (concentradora); `LIX_RIEG`, `LIX_SX`,
+    `LIX_EW` (lixiviación); `PTO_FILT`, `PTO_EMBA` (puerto). Cada uno con 4–5 cuentas `RACCT` (`ACEROS`, …) y
     un impulsor FINSSKF.
   - **Datos por centro**: ACDOCA con 6 meses reales (2026-05 → 2026-10), ACDOCP `BUDG` para esos 6 meses y `RF18M`
     para 18 meses (2026-11 → 2028-04). Todo coherente en P × Q.
   - **4 anomalías de 2026-10, con su bitácora de justificación**:
-    - aceros de perforación por roca abrasiva: Q en `RACCT_ACEROS`;
-    - tarifa del xantato: P en `RACCT_REACTIVOS`;
-    - falla de revestimientos del molino SAG: horas extra en `RACCT_LABOR`;
-    - buques retrasados: impulsor del puerto en 0, con `RACCT_LABOR` y `RACCT_MANTEN` fijos.
+    - aceros de perforación por roca abrasiva: Q en `ACEROS`;
+    - tarifa del xantato: P en `REACTIVOS`;
+    - falla de revestimientos del molino SAG: horas extra en `LABOR`;
+    - buques retrasados: impulsor del puerto en 0, con `LABOR` y `MANTEN` fijos.
 
   Todo dato nuevo debe pertenecer a un caso aprobado.
 
@@ -49,13 +49,14 @@ La deuda del punto 4 se consolida en [TECH_DEBT.md](TECH_DEBT.md) (ID, impacto, 
 | `debezium` / `debezium-init` | net, edge / net | 8083 | conector `cdc/connectors/s4hana-cdc.json` (PUT idempotente) |
 | `minio` / `minio-init` | net, edge / net | 9000, 9001 | buckets `lakehouse` (Delta) y `raw-docs` (originales versionados con metadatos Rcntr/Gjahr/Monat) |
 | `unity-catalog` | net, edge | 8081 | tablas `nodara.bronze.*` + volumen `nodara.raw.docs_<origen>` (H2 en volumen) |
-| `trino` | net, edge | 8080 | catálogos `lakehouse` (Delta: `bronze.*` + vistas `silver.*` + vistas `gold.*` P × Q, publicadas por el backend) y `s4hana` (PostgreSQL, rol `trino_ro`) |
+| `trino` | net, edge | 8080 | catálogos `lakehouse` (Delta: `bronze.*` + vistas `silver.*` + vistas `gold.*` P × Q) y `s4hana` (PostgreSQL, rol `trino_ro`) |
+| `trino-init` | net | — | job de una sola ejecución: espera las vistas silver y aplica el DDL versionado `lakehouse/trino/gold/*.sql`; el backend arranca cuando termina (`service_completed_successfully`) |
 | `delta-sink` | net | — | Kafka → Delta bronze; registra en Trino y UC y crea la vista silver (PK de la key Debezium) |
-| `vector-db` | kb, edge | 5433 | esquema `kb`; `chunks.gjahr/monat/rcntr` NOT NULL (Año/Mes/RCNTR); `documents.source_uri` → raw layer |
+| `vector-db` | kb, edge | 5433 | esquema `kb`; `chunks.gjahr/monat/rcntr` NOT NULL (Año/Mes/RCNTR) + `rcntr_scope` (centros que explica); `documents.source_uri` → raw layer |
 | `ollama` | net | — | contingencia local + embeddings; sin egress; modelos solo vía `make models` (perfil `bootstrap`) |
 | `egress-proxy` | net, egress | — | squid: default deny, solo CONNECT 443 a `egress/allowlist.txt` (solo NVIDIA) |
 | `langfuse` / `langfuse-db` | net, obs, edge / obs | 3001 | Langfuse v2 autoalojado; proyecto `nodara-rollingf`, keys y admin headless desde `.env` |
-| `backend` | net, kb | — | no publicado; `GET /api/v1/opex/cost-centers`, `GET /api/v1/opex/timeline?rcntr=`, `GET /api/v1/opex/matrix`, `POST /api/v1/ask {question, language: ES\|EN\|PT, engine: nim\|ollama, rcntr, period?}` |
+| `backend` | net, kb | — | no publicado; sin DDL; caché en memoria de Trino; `GET /api/v1/opex/cost-centers`, `GET /api/v1/opex/timeline?rcntr=`, `GET /api/v1/opex/matrix`, `POST /api/v1/ask {question, language: ES\|EN\|PT, engine: nim\|ollama, rcntr, period?}` |
 | `frontend` | net, edge | 3000 | única entrada; proxy `/api/*` → backend; selector por área, KPIs, gráfico real + presupuesto + plan, matriz P × Q expandible, chat IA; UI ES/EN/PT |
 | `ui-test` | edge | — | perfil `qa`: Playwright contra el frontend (`make ui-test`) |
 
@@ -76,27 +77,35 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
     - ACDOCA lleva `MSL`/`RUNIT`;
     - ACDOCP lleva `VMSL`/`RVUNIT`, el precio `KPRICE` y la parte fija `KFSL`/`VMFSL`, con `KSL = KPRICE × VMSL`;
     - la vista gold los expone como `msl`/`ruom`.
-  - `RACCT` usa los IDs simbólicos del Arquitecto (`RACCT_ACEROS`…, `varchar(20)`).
+  - `RCNTR` y `RACCT` usan los IDs del Arquitecto sin prefijo (`MIN_PERF`, `ACEROS`…). Las cuentas son simbólicas,
+    pero ambos caben en el CHAR 10 de SAP (KOSTL, SAKNR): `varchar(10)` en S/4 y en pgvector, verificado por el smoke.
   - ACDOCA debe quedar cuadrado por `belnr` (Σ `wsl` = Σ `hsl` = Σ `ksl` = 0). `BLART`: WA bodega (semanal), WE
     servicio, SA nómina, AF depreciación.
   - Datos maestros fuera de alcance solo en `backend/app/masterdata.py`: textos (SKAT, CSKT, TKA03, unidades,
-    categorías), área de cada centro, impulsor del OPEX unitario (`UNIT_DRIVERS`) y decimales de presentación.
+    categorías), área de cada centro y decimales de presentación. El impulsor del OPEX unitario de cada centro es parte
+    del SQL de gold (`lakehouse/trino/gold/`).
 - **La IA no calcula**: toda cifra se calcula en SQL de Trino (`backend/app/lakehouse.py`). Eso incluye:
   - costo, cantidad, precio y consumo específico por RCNTR × RACCT;
   - efectos P/Q/volumen/gasto y el ranking de efectos;
   - OPEX unitario y plan.
 
   El cálculo corre sobre las vistas gold `lakehouse.gold.vw_opex_c1_pxq` (master: una fila por versión, mes, RCNTR y
-  RACCT; nunca suma unidades distintas) y `vw_opex_c1_pxq_variance` (presupuesto flexible con `KFSL`/`VMFSL`). El
-  backend las publica en su primer análisis. Toda división usa `nullif` (un impulsor en 0 da NULL). Python y la UI
-  solo formatean. Trino inlinea
-  los CTE en cada referencia: leer cada tabla silver pocas veces (límite de 150 stages). El control de cifras
-  (`backend/app/figures.py`) reporta todo número de la respuesta que no venga de Trino, de las bitácoras o de la pregunta.
+  RACCT; nunca suma unidades distintas) y `vw_opex_c1_pxq_variance` (presupuesto flexible con `KFSL`/`VMFSL`). Toda
+  división usa `nullif` (un impulsor en 0 da NULL). Python y la UI solo formatean. Trino inlinea los CTE en cada
+  referencia: leer cada tabla silver pocas veces (límite de 150 stages). El control de cifras (`backend/app/figures.py`)
+  reporta todo número de la respuesta que no venga de Trino, de las bitácoras o de la pregunta.
+- **DDL del lakehouse**: las vistas gold se cambian en `lakehouse/trino/gold/*.sql`, que aplica `trino-init` antes del
+  backend. El backend **nunca ejecuta DDL** (el smoke lo verifica).
+- **Caché del backend**: toda consulta analítica pasa por `lakehouse.cached()`. Su clave incluye la versión Delta de
+  bronze (`$history`, sondeada cada 2 s), así que un commit CDC la invalida. Las lecturas en vivo de S/4 y la
+  frescura del CDC no se cachean.
 - **Base de conocimiento**: bitácoras de justificación en `knowledge/raw-docs/<origen>/<doc_id>.md` (orígenes `mina`,
   `concentradora` y `puerto`; `doc_type` `maintenance_log` u `operations_log`; varias secciones), con `gjahr`, `monat` y `rcntr`
-  obligatorios en el front matter y una sección `##` por fragmento. `make kb-seed` regenera
-  `init-scripts/vectordb/02-seed-docs.sql`, que **nunca se edita a mano**. La recuperación filtra primero por
-  RCNTR + Año + Mes del período analizado y después ordena por similitud.
+  obligatorios en el front matter y una sección `##` por fragmento. `rcntr_scope` (opcional) lista los centros que la
+  bitácora explica, por ejemplo el efecto dominó del SAG en Relaves y Filtrado; si falta, vale el propio `rcntr`.
+  `make kb-seed` regenera `init-scripts/vectordb/02-seed-docs.sql`, que **nunca se edita a mano**. La recuperación
+  filtra primero por Año + Mes del período analizado y por RCNTR dentro de `rcntr_scope`, y después ordena por
+  similitud.
 - **Raw layer**: `minio-init` sube los originales a `s3://raw-docs/<origen>/` solo si cambia su SHA-256 (bucket
   versionado), con metadatos `Rcntr/Gjahr/Monat`, y registra un volumen EXTERNAL de Unity Catalog por origen.
   `make smoke` verifica índice ⊆ raw.
@@ -114,7 +123,8 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
   halo de superficie. Tooltip por columna con teclado y vista de tabla. Colores validados con el validador de dataviz
   sobre la superficie `#0f172a`. Sin scroll horizontal en móvil: un `<select>` toma el ancho de su opción más larga,
   así que va con `w-full`.
-- **Motores LLM**: `engine` = `nim` (por defecto) u `ollama`. El modelo NIM se cambia solo con `NIM_MODEL`, después de
+- **Motores LLM**: `engine` = `nim` (por defecto) u `ollama`. El modelo NIM definitivo es `openai/gpt-oss-20b`, por
+  decisión del Arquitecto, que asume el riesgo (TD-010). El modelo NIM se cambia solo con `NIM_MODEL`, después de
   probarlo con una llamada real (NVIDIA retira modelos y habilita otros por cuenta). Si un intento supera
   `NIM_TIMEOUT_S` o falla, la pregunta sigue en Ollama y se informa en `model_used`/`attempts`. Los embeddings siempre son locales.
 - **Observabilidad**: una traza de Langfuse por pregunta (`user_id` = `TRACE_USER_ID`) con spans de Trino y pgvector.
@@ -136,11 +146,12 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 1. `make config` → compose válido.
 2. `make up` → sin colisiones (preflight) y todo `healthy` (lo espera `scripts/wait-healthy.sh`).
 3. `make smoke` → **0 fallos**. Primero re-siembra (`make fresh`, borra los datos). Incluye:
-   - el modelo financiero con los campos P × Q reales y los 12 centros con sus 4 anomalías;
-   - CDC → bronze → silver → gold (`vw_opex_c1_pxq`: una fila por RCNTR × RACCT, sin división por cero);
-   - efectos P/Q/volumen/gasto y OPEX unitario idénticos en Trino y PostgreSQL;
-   - la IA nombrando la cuenta y el efecto de origen en ES/EN/PT con NIM, más la contingencia Ollama, si los modelos
-     están importados;
+   - el modelo financiero con los campos P × Q reales, los IDs de 10 caracteres y los 12 centros con sus 4 anomalías;
+   - CDC → bronze → silver → gold (`vw_opex_c1_pxq`: una fila por RCNTR × RACCT, sin división por cero), con gold
+     publicado por `trino-init` antes del backend y sin DDL en el backend;
+   - efectos P/Q/volumen/gasto y OPEX unitario idénticos en Trino y PostgreSQL, y el caché invalidado por CDC;
+   - la IA nombrando la cuenta y el efecto de origen en ES/EN/PT con NIM (y el efecto dominó del SAG en Relaves), más
+     la contingencia Ollama, si los modelos están importados;
    - las trazas de Langfuse, el tiempo real y el egress.
 4. Si se tocó el frontend: `make ui-test` en verde.
 5. README, este archivo y `TECH_DEBT.md` actualizados.
@@ -182,8 +193,9 @@ los volúmenes, incluidos los modelos)
 - gpt-oss en NIM separa los miles con espacio fino (`4 207 000`): el control de cifras lo admite.
 - `Intl.NumberFormat("es")` no agrupa los números de 4 cifras: la UI muestra `7640 h` y el LLM recibe `7.640 h`.
 - Trino: `format('%.2f', NULL)` devuelve `"nu"` (Java aplica la precisión al texto "null"), no NULL; usar
-  `if(x IS NULL, …)`. Las vistas gold no existen hasta el primer análisis del backend (lo dispara cualquier llamada a
-  `/api/opex/*`).
+  `if(x IS NULL, …)`.
+- Trino no crea una vista si no existen las tablas que lee: `trino-init` espera las vistas silver de `delta-sink`
+  (hasta `GOLD_WAIT_TIMEOUT_S`).
 - PostgreSQL resuelve `round(integer)` como `round(double precision)`: castear a `numeric` antes de `round(x, n)`.
 - Las fichas de tabla del Arquitecto son PDF escaneados (imágenes): para leerlas, renderizar las páginas a PNG
   (`pdftoppm` en un contenedor `alpine` desechable) y abrirlas como imagen.

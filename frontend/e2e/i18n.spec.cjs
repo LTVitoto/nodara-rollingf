@@ -3,25 +3,27 @@
 // chain grouped by area, continuous chart (6 actual months with their BUDG budget tick + 18 plan months) with
 // keyboard tooltip, measure toggle (OPEX ↔ unit OPEX of the driver) and table view, KPI tiles against the
 // budget, the expandable P x Q matrix (specific consumption per input, origin of the deviation, zero driver
-// shown as not computable), and the AI chat carrying language + engine + cost center.
+// shown as not computable), the AI chat carrying language + engine + cost center, and the RCNTR scope of a log
+// (domino effect: the SAG mill log also explains tailings).
 // Runs in the Playwright image:  make ui-test
 const { chromium } = require("playwright-core");
 
 const BASE_URL = process.env.BASE_URL ?? "http://frontend:3000";
-const RCNTR = "RCNTR_MIN_PERF";
-const PORT = "RCNTR_PTO_EMBA";
-const FLOTATION = "RCNTR_CON_FLOT";
-const VALUE_CHAIN = ["RCNTR_MIN_PERF", "RCNTR_MIN_TRON", "RCNTR_MIN_CARG", "RCNTR_MIN_TRAN", "RCNTR_CON_MOLI",
-                     FLOTATION, "RCNTR_CON_RELA", "RCNTR_LIX_RIEG", "RCNTR_LIX_SX", "RCNTR_LIX_EW", "RCNTR_PTO_FILT", PORT];
+const RCNTR = "MIN_PERF";
+const PORT = "PTO_EMBA";
+const FLOTATION = "CON_FLOT";
+const DOMINO = { rcntr: "CON_RELA", log: "BIT-MOLI-2026-10", scope: ["CON_MOLI", "CON_RELA", "PTO_FILT"] };
+const VALUE_CHAIN = ["MIN_PERF", "MIN_TRON", "MIN_CARG", "MIN_TRAN", "CON_MOLI",
+                     FLOTATION, "CON_RELA", "LIX_RIEG", "LIX_SX", "LIX_EW", "PTO_FILT", PORT];
 const EXPECTED = {
   es: { lang: "es", name: "Español", h1: "Rolling Forecast de OPEX C1 · 18 meses", label: "Pregunta del Gerente de Finanzas", logs: "Bitácoras",
-        tooltip: "oct 26", table: "Ver tabla",
+        tooltip: "oct 26", table: "Ver tabla", scope: "Alcance",
         meta: ["Cifras verificadas contra Trino", "Idioma de la respuesta", "Tiempo total", "Motor"] },
   en: { lang: "en", name: "English", h1: "C1 OPEX Rolling Forecast · 18 months", label: "Finance Manager question", logs: "Logs",
-        tooltip: "Oct 26", table: "Show table",
+        tooltip: "Oct 26", table: "Show table", scope: "Scope",
         meta: ["Figures checked against Trino", "Answer language", "Total time", "Engine"] },
   pt: { lang: "pt-BR", name: "Português", h1: "Rolling Forecast de OPEX C1 · 18 meses", label: "Pergunta do Gerente Financeiro", logs: "Diários",
-        tooltip: "out. de 26", table: "Ver tabela",
+        tooltip: "out. de 26", table: "Ver tabela", scope: "Alcance",
         meta: ["Números conferidos com Trino", "Idioma da resposta", "Tempo total", "Motor"] },
 };
 const ENGINES = { nim: "NVIDIA NIM (Cloud)", ollama: "Ollama (Local)" };
@@ -42,7 +44,11 @@ function mockAnswer(body) {
                 opex: { actual: 1, budget: 1, variance: 0, variance_pct: 0 }, unit_cost: { actual: 1, budget: 1, delta_pct: 0 },
                 effects: { price: 0, efficiency: 0, volume: 0, spending: null }, origins: [], lines: [], top_postings: [],
                 forecast: { months: 0 } },
-    retrieval_filter: { "Año": 2026, "Mes": 10, RCNTR: body.rcntr }, sources: [],
+    retrieval_filter: { "Año": 2026, "Mes": 10, RCNTR: body.rcntr },
+    sources: body.rcntr !== DOMINO.rcntr ? [] : [{
+      doc_id: DOMINO.log, title: "x", author_role: "x", section: "Efecto aguas abajo", similarity: 0.8, excerpt: "x",
+      source_uri: `s3://raw-docs/concentradora/${DOMINO.log}.md`,
+      metadata: { "Año": 2026, "Mes": 10, RCNTR: DOMINO.scope[0], Alcance: DOMINO.scope } }],
     models: { chat: "mock", embeddings: "mock" }, timings_ms: { analysis_ms: 300, generate_ms: 4100 },
   };
 }
@@ -154,13 +160,13 @@ async function expectFooter(page, code) {
     const consumption = await perf.locator(`[data-racct=${origin.racct}]`).getByTestId("pxq-consumption").innerText();
     const originCell = await perf.getByTestId("origin-cell").innerText();
     if (lines !== centers[RCNTR].lines.length || !consumption.includes(`${sig(steel.actual_sc)} / ${sig(steel.budget_sc)}`) ||
-        originCell !== es(origin.amount, 0, true) || origin.racct !== "RACCT_ACEROS" || origin.effect !== "efficiency") {
+        originCell !== es(origin.amount, 0, true) || origin.racct !== "ACEROS" || origin.effect !== "efficiency") {
       throw new Error(`matrix ${RCNTR}: ${lines} lines, consumption "${consumption}", origin ${JSON.stringify(origin)} cell "${originCell}"`);
     }
     console.log(`  ✔ matrix ${RCNTR}: ${lines} inputs (RACCT) · ${origin.racct} consumo específico ${consumption.replace(/\n/g, " ")} · origin Q ${originCell}`);
     await page.getByTestId(`matrix-toggle-${PORT}`).click();
     const port = page.getByTestId(`matrix-lines-${PORT}`);
-    const labor = await port.locator("[data-racct=RACCT_LABOR]").getByTestId("pxq-consumption").innerText();
+    const labor = await port.locator("[data-racct=LABOR]").getByTestId("pxq-consumption").innerText();
     const portUnit = await page.getByTestId(`matrix-row-${PORT}`).getByTestId("matrix-unit-cost").innerText();
     if (!labor.includes("n/d (impulsor 0)") || !portUnit.includes("n/d (impulsor 0)") || centers[PORT].origin !== null) {
       throw new Error(`matrix ${PORT}: labor "${labor}", unit "${portUnit}", origin ${JSON.stringify(centers[PORT].origin)}`);
@@ -214,6 +220,20 @@ async function expectFooter(page, code) {
       await page.waitForFunction((lang) => document.documentElement.lang === lang, EXPECTED[code].lang);
       await expectFooter(page, code);
       console.log(`  ✔ ${code.toUpperCase()}  footer re-translated in place: ${EXPECTED[code].meta.slice(0, 3).join(" · ")}`);
+    }
+
+    // Domino effect: the log of another cost center shows the RCNTR scope that routed it to this question.
+    await page.getByTestId("cost-center-select").selectOption(DOMINO.rcntr);
+    await page.locator("#question").fill("domino check");
+    await page.locator("form button[type=submit]").click();
+    await page.getByTestId("answer").nth(sent.length - 1).waitFor();
+    if (sent.at(-1)?.rcntr !== DOMINO.rcntr) throw new Error(`/api/ask body ${JSON.stringify(sent.at(-1))} misses ${DOMINO.rcntr}`);
+    for (const code of ["pt", "en", "es"]) {
+      await page.getByRole("button", { name: EXPECTED[code].name }).click();
+      await page.waitForFunction((lang) => document.documentElement.lang === lang, EXPECTED[code].lang);
+      await expectText(page.getByTestId("source-scope").last(), `${EXPECTED[code].scope} ${DOMINO.scope.join(" · ")}`,
+                       `[${code}] log scope chip`);
+      console.log(`  ✔ ${code.toUpperCase()}  ${DOMINO.rcntr} ← ${DOMINO.log}: "${EXPECTED[code].scope} ${DOMINO.scope.join(" · ")}"`);
     }
   } finally {
     await browser.close();

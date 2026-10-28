@@ -3,7 +3,8 @@
 
 Single source of truth: knowledge/raw-docs/<source>/<doc_id>.md (front matter + one `## section` per
 chunk). The front matter must carry the SAP coordinates every vector is stored with — gjahr (Año),
-monat (Mes) and rcntr (RCNTR) — and the build fails without them. Chunk text is copied verbatim, so
+monat (Mes) and rcntr (RCNTR) — and the build fails without them. An optional rcntr_scope lists every cost
+center the log explains (comma separated, e.g. the downstream cost centers of a mill stop); it defaults to rcntr. Chunk text is copied verbatim, so
 `make smoke` can prove that the index is contained in the raw layer.
 Run `make kb-seed` after editing a document; never edit the generated SQL by hand.
 """
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "knowledge" / "raw-docs"
 OUTPUT = ROOT / "init-scripts" / "vectordb" / "02-seed-docs.sql"
 DOC_FIELDS = ("doc_id", "title", "doc_type", "author_role", "site", "language", "classification")
-COST_CENTER = re.compile(r"^[A-Z0-9_]{1,20}$")
+COST_CENTER = re.compile(r"^[A-Z0-9_]{1,10}$")  # KOSTL, CHAR 10
 QUOTE_TAG = "$md$"
 
 
@@ -24,15 +25,17 @@ def literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def coordinates(path: Path, meta: dict[str, str]) -> tuple[int, int, str]:
-    """Mandatory vector metadata: (Año, Mes, RCNTR)."""
+def coordinates(path: Path, meta: dict[str, str]) -> tuple[int, int, str, list[str]]:
+    """Mandatory vector metadata: (Año, Mes, RCNTR) and the cost centers the log explains."""
     missing = [key for key in ("gjahr", "monat", "rcntr") if not meta.get(key)]
     if missing:
         raise SystemExit(f"{path}: front matter misses the mandatory metadata {missing}")
     gjahr, monat, rcntr = int(meta["gjahr"]), int(meta["monat"]), meta["rcntr"]
-    if not (2000 <= gjahr <= 2100 and 1 <= monat <= 12 and COST_CENTER.match(rcntr)):
-        raise SystemExit(f"{path}: invalid metadata gjahr={gjahr} monat={monat} rcntr={rcntr}")
-    return gjahr, monat, rcntr
+    scope = [item.strip() for item in meta.get("rcntr_scope", rcntr).split(",") if item.strip()]
+    if not (2000 <= gjahr <= 2100 and 1 <= monat <= 12 and COST_CENTER.match(rcntr) and rcntr in scope
+            and all(COST_CENTER.match(item) for item in scope)):
+        raise SystemExit(f"{path}: invalid metadata gjahr={gjahr} monat={monat} rcntr={rcntr} rcntr_scope={scope}")
+    return gjahr, monat, rcntr, scope
 
 
 def parse_document(path: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
@@ -60,14 +63,15 @@ def main() -> None:
     documents, chunks = [], []
     for path in sorted(RAW.glob("*/*.md")):
         meta, sections = parse_document(path)
-        gjahr, monat, rcntr = coordinates(path, meta)
+        gjahr, monat, rcntr, scope = coordinates(path, meta)
         uri = f"s3://raw-docs/{path.relative_to(RAW).as_posix()}"
         documents.append("(" + ", ".join([*(literal(meta[f]) for f in DOC_FIELDS), literal(uri)]) + ")")
         for number, (section, content) in enumerate(sections, start=1):
             if QUOTE_TAG in content:
                 raise SystemExit(f"{path}: content contains the reserved quote tag {QUOTE_TAG}")
             chunks.append(f"({literal(meta['doc_id'])}, {number}, {literal(section)}, {gjahr}, {monat}, "
-                          f"{literal(rcntr)},\n{QUOTE_TAG}{content}{QUOTE_TAG})")
+                          f"{literal(rcntr)}, ARRAY[{', '.join(literal(item) for item in scope)}]::varchar(10)[],\n"
+                          f"{QUOTE_TAG}{content}{QUOTE_TAG})")
     if not chunks:
         raise SystemExit(f"no documents with sections under {RAW.relative_to(ROOT)}")
 
@@ -77,7 +81,7 @@ def main() -> None:
         "-- Embeddings stay NULL until the backend runs POST /api/v1/kb/embed (make embed).\n\n"
         f"INSERT INTO kb.documents ({', '.join(DOC_FIELDS)}, source_uri) VALUES\n    "
         + ",\n    ".join(documents) + ";\n\n"
-        "INSERT INTO kb.chunks (doc_id, chunk_no, section, gjahr, monat, rcntr, content) VALUES\n"
+        "INSERT INTO kb.chunks (doc_id, chunk_no, section, gjahr, monat, rcntr, rcntr_scope, content) VALUES\n"
         + ",\n\n".join(chunks) + ";\n",
         encoding="utf-8")
     print(f"{OUTPUT.relative_to(ROOT)}: {len(documents)} documents, {len(chunks)} chunks")

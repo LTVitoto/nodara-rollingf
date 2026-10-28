@@ -4,8 +4,12 @@ and the per-account variance analysis the AI explains. No arithmetic happens her
 computed by Trino."""
 from __future__ import annotations
 
+import logging
+
 from . import lakehouse, masterdata
 from .lakehouse import AnalysisNotFound
+
+log = logging.getLogger(__name__)
 
 _LINE_FIELDS = ("behavior", "actual_ksl", "budget_ksl", "flex_ksl", "variance", "variance_pct", "actual_msl",
                 "budget_msl", "flex_msl", "actual_price", "budget_price", "price_pct", "actual_sc", "budget_sc",
@@ -144,3 +148,16 @@ def matrix(period: str | None = None) -> dict:
                                           "cost_centers": []})["cost_centers"].append(center)
     return {"period": rows[0]["period"] if rows else None, "currency": lakehouse.GROUP_CURRENCY,
             "budget_category": lakehouse.BUDGET_CATEGORY, "areas": list(areas.values())}
+
+
+def warm_up() -> None:
+    """Fills the in-memory cache of the lakehouse (backend start): the matrix and every cost center timeline
+    with its analysis, so the first questions skip the Trino computation."""
+    try:
+        matrix()
+        for center in cost_centers()["cost_centers"]:
+            if center["last_actual"] and center["categories"]:
+                timeline(center["rcntr"], center["categories"][-1])
+        log.info("lakehouse cache warmed up: %s", lakehouse.cache_stats())
+    except Exception as exc:  # warm-up is an optimization: the first requests compute instead
+        log.warning("lakehouse cache warm-up skipped: %s", exc)

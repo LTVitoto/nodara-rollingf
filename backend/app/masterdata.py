@@ -1,36 +1,37 @@
 """SAP master data outside the simulated table scope — texts of SKAT (G/L accounts), TKA03 (statistical
 key figures), T006A (units), CSKT (cost centers) and the plan categories of ACDOCP in the three supported
-languages — plus the structure of the OPEX C1 value chain: the area of each cost center and the
-statistical key figure its specific consumption and unit OPEX are reported against."""
+languages — plus the structure of the OPEX C1 value chain (area of each cost center) and display decimals.
+The statistical key figure each cost center is reported against is part of the gold view definition
+(lakehouse/trino/gold)."""
 from __future__ import annotations
 
 ACCOUNTS = {
-    "RACCT_ACEROS": {"es": "Aceros de perforación (brocas)", "en": "Drilling steels (bits)",
+    "ACEROS": {"es": "Aceros de perforación (brocas)", "en": "Drilling steels (bits)",
                      "pt": "Aços de perfuração (brocas)"},
-    "RACCT_DIESEL": {"es": "Diésel", "en": "Diesel fuel", "pt": "Diesel"},
-    "RACCT_LABOR": {"es": "Mano de obra (horas hombre)", "en": "Labor (man-hours)", "pt": "Mão de obra (homem-hora)"},
-    "RACCT_MANTEN": {"es": "Mantención contratada", "en": "Contracted maintenance", "pt": "Manutenção contratada"},
-    "RACCT_DEPREC": {"es": "Depreciación", "en": "Depreciation", "pt": "Depreciação"},
-    "RACCT_EXPLOSIV": {"es": "Explosivos", "en": "Explosives", "pt": "Explosivos"},
-    "RACCT_ACCESOR": {"es": "Accesorios de voladura", "en": "Blasting accessories", "pt": "Acessórios de detonação"},
-    "RACCT_SERVIC": {"es": "Servicio de tronadura", "en": "Blasting service", "pt": "Serviço de detonação"},
-    "RACCT_ENERGIA": {"es": "Energía eléctrica", "en": "Electric power", "pt": "Energia elétrica"},
-    "RACCT_REPUEST": {"es": "Repuestos", "en": "Spare parts", "pt": "Peças de reposição"},
-    "RACCT_NEUMAT": {"es": "Neumáticos", "en": "Tyres", "pt": "Pneus"},
-    "RACCT_BOLAS": {"es": "Bolas de molienda", "en": "Grinding balls", "pt": "Bolas de moagem"},
-    "RACCT_REVEST": {"es": "Revestimientos de molinos", "en": "Mill liners", "pt": "Revestimentos de moinhos"},
-    "RACCT_REACTIVOS": {"es": "Reactivos (colector xantato)", "en": "Reagents (xanthate collector)",
+    "DIESEL": {"es": "Diésel", "en": "Diesel fuel", "pt": "Diesel"},
+    "LABOR": {"es": "Mano de obra (horas hombre)", "en": "Labor (man-hours)", "pt": "Mão de obra (homem-hora)"},
+    "MANTEN": {"es": "Mantención contratada", "en": "Contracted maintenance", "pt": "Manutenção contratada"},
+    "DEPREC": {"es": "Depreciación", "en": "Depreciation", "pt": "Depreciação"},
+    "EXPLOSIV": {"es": "Explosivos", "en": "Explosives", "pt": "Explosivos"},
+    "ACCESOR": {"es": "Accesorios de voladura", "en": "Blasting accessories", "pt": "Acessórios de detonação"},
+    "SERVIC": {"es": "Servicio de tronadura", "en": "Blasting service", "pt": "Serviço de detonação"},
+    "ENERGIA": {"es": "Energía eléctrica", "en": "Electric power", "pt": "Energia elétrica"},
+    "REPUEST": {"es": "Repuestos", "en": "Spare parts", "pt": "Peças de reposição"},
+    "NEUMAT": {"es": "Neumáticos", "en": "Tyres", "pt": "Pneus"},
+    "BOLAS": {"es": "Bolas de molienda", "en": "Grinding balls", "pt": "Bolas de moagem"},
+    "REVEST": {"es": "Revestimientos de molinos", "en": "Mill liners", "pt": "Revestimentos de moinhos"},
+    "REACTIVOS": {"es": "Reactivos (colector xantato)", "en": "Reagents (xanthate collector)",
                         "pt": "Reagentes (coletor xantato)"},
-    "RACCT_CAL": {"es": "Cal", "en": "Lime", "pt": "Cal"},
-    "RACCT_FLOCUL": {"es": "Floculante", "en": "Flocculant", "pt": "Floculante"},
-    "RACCT_AGUA": {"es": "Agua industrial", "en": "Industrial water", "pt": "Água industrial"},
-    "RACCT_ACIDO": {"es": "Ácido sulfúrico", "en": "Sulfuric acid", "pt": "Ácido sulfúrico"},
-    "RACCT_EXTRACT": {"es": "Extractante orgánico", "en": "Organic extractant", "pt": "Extratante orgânico"},
-    "RACCT_DILUY": {"es": "Diluyente", "en": "Diluent", "pt": "Diluente"},
-    "RACCT_ADITIVOS": {"es": "Aditivos de electrolito", "en": "Electrolyte additives", "pt": "Aditivos de eletrólito"},
-    "RACCT_ANODOS": {"es": "Ánodos de plomo", "en": "Lead anodes", "pt": "Ânodos de chumbo"},
-    "RACCT_TELAS": {"es": "Telas filtrantes", "en": "Filter cloths", "pt": "Telas filtrantes"},
-    "RACCT_ALMAC": {"es": "Almacenamiento de concentrado", "en": "Concentrate storage",
+    "CAL": {"es": "Cal", "en": "Lime", "pt": "Cal"},
+    "FLOCUL": {"es": "Floculante", "en": "Flocculant", "pt": "Floculante"},
+    "AGUA": {"es": "Agua industrial", "en": "Industrial water", "pt": "Água industrial"},
+    "ACIDO": {"es": "Ácido sulfúrico", "en": "Sulfuric acid", "pt": "Ácido sulfúrico"},
+    "EXTRACT": {"es": "Extractante orgánico", "en": "Organic extractant", "pt": "Extratante orgânico"},
+    "DILUY": {"es": "Diluyente", "en": "Diluent", "pt": "Diluente"},
+    "ADITIVOS": {"es": "Aditivos de electrolito", "en": "Electrolyte additives", "pt": "Aditivos de eletrólito"},
+    "ANODOS": {"es": "Ánodos de plomo", "en": "Lead anodes", "pt": "Ânodos de chumbo"},
+    "TELAS": {"es": "Telas filtrantes", "en": "Filter cloths", "pt": "Telas filtrantes"},
+    "ALMAC": {"es": "Almacenamiento de concentrado", "en": "Concentrate storage",
                     "pt": "Armazenagem de concentrado"},
 }
 STATISTICAL_KEY_FIGURES = {
@@ -57,31 +58,25 @@ AREAS = {
 }
 # Value-chain order of the OPEX C1: the order of the selector and of the matrix.
 COST_CENTERS = {
-    "RCNTR_MIN_PERF": {"es": "Perforación", "en": "Drilling", "pt": "Perfuração"},
-    "RCNTR_MIN_TRON": {"es": "Tronadura", "en": "Blasting", "pt": "Detonação"},
-    "RCNTR_MIN_CARG": {"es": "Carguío", "en": "Loading", "pt": "Carregamento"},
-    "RCNTR_MIN_TRAN": {"es": "Transporte", "en": "Hauling", "pt": "Transporte"},
-    "RCNTR_CON_MOLI": {"es": "Molienda", "en": "Grinding", "pt": "Moagem"},
-    "RCNTR_CON_FLOT": {"es": "Flotación", "en": "Flotation", "pt": "Flotação"},
-    "RCNTR_CON_RELA": {"es": "Relaves", "en": "Tailings", "pt": "Rejeitos"},
-    "RCNTR_LIX_RIEG": {"es": "Riego de pilas", "en": "Heap irrigation", "pt": "Irrigação de pilhas"},
-    "RCNTR_LIX_SX": {"es": "Extracción por solventes", "en": "Solvent extraction", "pt": "Extração por solventes"},
-    "RCNTR_LIX_EW": {"es": "Electro-obtención", "en": "Electrowinning", "pt": "Eletro-obtenção"},
-    "RCNTR_PTO_FILT": {"es": "Filtrado de concentrado", "en": "Concentrate filtering",
+    "MIN_PERF": {"es": "Perforación", "en": "Drilling", "pt": "Perfuração"},
+    "MIN_TRON": {"es": "Tronadura", "en": "Blasting", "pt": "Detonação"},
+    "MIN_CARG": {"es": "Carguío", "en": "Loading", "pt": "Carregamento"},
+    "MIN_TRAN": {"es": "Transporte", "en": "Hauling", "pt": "Transporte"},
+    "CON_MOLI": {"es": "Molienda", "en": "Grinding", "pt": "Moagem"},
+    "CON_FLOT": {"es": "Flotación", "en": "Flotation", "pt": "Flotação"},
+    "CON_RELA": {"es": "Relaves", "en": "Tailings", "pt": "Rejeitos"},
+    "LIX_RIEG": {"es": "Riego de pilas", "en": "Heap irrigation", "pt": "Irrigação de pilhas"},
+    "LIX_SX": {"es": "Extracción por solventes", "en": "Solvent extraction", "pt": "Extração por solventes"},
+    "LIX_EW": {"es": "Electro-obtención", "en": "Electrowinning", "pt": "Eletro-obtenção"},
+    "PTO_FILT": {"es": "Filtrado de concentrado", "en": "Concentrate filtering",
                        "pt": "Filtragem de concentrado"},
-    "RCNTR_PTO_EMBA": {"es": "Embarque", "en": "Shipping", "pt": "Embarque"},
+    "PTO_EMBA": {"es": "Embarque", "en": "Shipping", "pt": "Embarque"},
 }
 COST_CENTER_AREAS = {
-    "RCNTR_MIN_PERF": "MINA", "RCNTR_MIN_TRON": "MINA", "RCNTR_MIN_CARG": "MINA", "RCNTR_MIN_TRAN": "MINA",
-    "RCNTR_CON_MOLI": "CONCENTRADORA", "RCNTR_CON_FLOT": "CONCENTRADORA", "RCNTR_CON_RELA": "CONCENTRADORA",
-    "RCNTR_LIX_RIEG": "LIXIVIACION", "RCNTR_LIX_SX": "LIXIVIACION", "RCNTR_LIX_EW": "LIXIVIACION",
-    "RCNTR_PTO_FILT": "PUERTO", "RCNTR_PTO_EMBA": "PUERTO",
-}
-UNIT_DRIVERS = {
-    "RCNTR_MIN_PERF": "METPER", "RCNTR_MIN_TRON": "TONTRO", "RCNTR_MIN_CARG": "TONCAR", "RCNTR_MIN_TRAN": "TONMOV",
-    "RCNTR_CON_MOLI": "TONMOL", "RCNTR_CON_FLOT": "TONFLO", "RCNTR_CON_RELA": "TONREL",
-    "RCNTR_LIX_RIEG": "TONAPI", "RCNTR_LIX_SX": "M3PLS", "RCNTR_LIX_EW": "TONCAT",
-    "RCNTR_PTO_FILT": "TONFIL", "RCNTR_PTO_EMBA": "TONEMB",
+    "MIN_PERF": "MINA", "MIN_TRON": "MINA", "MIN_CARG": "MINA", "MIN_TRAN": "MINA",
+    "CON_MOLI": "CONCENTRADORA", "CON_FLOT": "CONCENTRADORA", "CON_RELA": "CONCENTRADORA",
+    "LIX_RIEG": "LIXIVIACION", "LIX_SX": "LIXIVIACION", "LIX_EW": "LIXIVIACION",
+    "PTO_FILT": "PUERTO", "PTO_EMBA": "PUERTO",
 }
 # Display decimals of the unit OPEX (USD per driver unit): 2 for meters and cathode tonnes, 4 otherwise.
 UNIT_COST_DECIMALS = {"METPER": 2, "TONCAT": 2}

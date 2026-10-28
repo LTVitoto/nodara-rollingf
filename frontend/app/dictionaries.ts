@@ -131,6 +131,7 @@ const pt = {
     year: "Ano",
     month: "Mês",
     similarity: "similaridade",
+    scope: "Alcance",
   },
   meta: {
     language: "Idioma da resposta",
@@ -271,6 +272,7 @@ const es: Dictionary = {
     year: "Año",
     month: "Mes",
     similarity: "similitud",
+    scope: "Alcance",
   },
   meta: {
     language: "Idioma de la respuesta",
@@ -409,6 +411,7 @@ const en: Dictionary = {
     year: "Year",
     month: "Month",
     similarity: "similarity",
+    scope: "Scope",
   },
   meta: {
     language: "Answer language",

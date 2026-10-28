@@ -148,7 +148,7 @@ export type Source = {
   section: string;
   similarity: number;
   excerpt: string;
-  metadata: Record<string, number | string>;
+  metadata: Record<string, number | string | string[]>;  // Año, Mes, RCNTR + Alcance (cost centers it covers)
 };
 
 export type AskResult = {

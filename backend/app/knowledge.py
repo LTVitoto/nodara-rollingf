@@ -1,5 +1,6 @@
 """Knowledge base access: operational logs (bitácoras) chunked in pgvector. Every vector carries its
-SAP coordinates — Año (gjahr), Mes (monat) and RCNTR — and retrieval is pre-filtered on them."""
+SAP coordinates — Año (gjahr), Mes (monat) and RCNTR — and retrieval is pre-filtered on them. A log also
+covers the cost centers of its RCNTR scope (e.g. a mill stop explains the downstream tailings and filtering)."""
 from __future__ import annotations
 
 from psycopg.rows import dict_row
@@ -11,10 +12,11 @@ _pool: ConnectionPool | None = None
 
 SEARCH_SQL = """
     SELECT c.chunk_id, c.doc_id, d.title, d.author_role, d.source_uri, c.section, c.content,
-           c.gjahr, c.monat, c.rcntr, 1 - (c.embedding <=> %(q)s::vector) AS similarity
+           c.gjahr, c.monat, c.rcntr, c.rcntr_scope, 1 - (c.embedding <=> %(q)s::vector) AS similarity
       FROM kb.chunks c
       JOIN kb.documents d ON d.doc_id = c.doc_id
-     WHERE c.embedding IS NOT NULL AND c.rcntr = %(rcntr)s AND c.gjahr = %(gjahr)s AND c.monat = %(monat)s
+     WHERE c.embedding IS NOT NULL AND c.rcntr_scope @> ARRAY[%(rcntr)s]::varchar[]
+       AND c.gjahr = %(gjahr)s AND c.monat = %(monat)s
      ORDER BY c.embedding <=> %(q)s::vector
      LIMIT %(k)s
 """
@@ -41,7 +43,7 @@ def _vector(values: list[float]) -> str:
 
 
 def search(embedding: list[float], rcntr: str, gjahr: int, monat: int, k: int) -> list[dict]:
-    """Most similar logs among those of the cost center and month (metadata filter first)."""
+    """Most similar logs among those that cover the cost center in that month (metadata filter first)."""
     with _pool.connection() as conn:
         return conn.execute(SEARCH_SQL, {"q": _vector(embedding), "rcntr": rcntr, "gjahr": gjahr,
                                          "monat": monat, "k": k}).fetchall()

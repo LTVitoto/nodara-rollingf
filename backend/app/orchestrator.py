@@ -138,7 +138,7 @@ LABELS = {
         "unit_na": "no calculable (impulsor real = 0)",
         "effects": "Efectos totales:",
         "ranking": "Ranking de efectos desfavorables (origen de la desviación, calculado por Trino):",
-        "no_unfavorable": "ninguna cuenta tiene efectos desfavorables",
+        "no_unfavorable": "ninguna cuenta tiene efectos desfavorables: el origen es el impulsor {stagr} (Volumen)",
         "matrix": "Matriz por cuenta (RACCT · real vs presupuesto):",
         "behavior": {"F": "fijo", "V": "variable", "M": "mixto"},
         "amount_only": "monto USD",
@@ -156,7 +156,7 @@ LABELS = {
         "plan_total": "OPEX total planificado del horizonte (ACDOCP): {total} · OPEX unitario planificado del horizonte: {unit}",
         "no_plan": "Sin plan en ACDOCP para la categoría {category} después de {period}.",
         "no_logs": "No hay bitácoras indexadas para RCNTR {rcntr} en {period}.",
-        "log": "Año {gjahr} · Mes {monat} · RCNTR {rcntr} · {author}",
+        "log": "Año {gjahr} · Mes {monat} · RCNTR {rcntr} · alcance {scope} · {author}",
         "na": "n/d",
     },
     "en": {
@@ -169,7 +169,7 @@ LABELS = {
         "unit_na": "not computable (actual driver = 0)",
         "effects": "Total effects:",
         "ranking": "Ranking of unfavorable effects (origin of the deviation, computed by Trino):",
-        "no_unfavorable": "no account has unfavorable effects",
+        "no_unfavorable": "no account has unfavorable effects: the origin is the driver {stagr} (Volume)",
         "matrix": "Matrix by account (RACCT · actual vs budget):",
         "behavior": {"F": "fixed", "V": "variable", "M": "mixed"},
         "amount_only": "USD amount",
@@ -187,7 +187,7 @@ LABELS = {
         "plan_total": "total planned OPEX of the horizon (ACDOCP): {total} · planned unit OPEX of the horizon: {unit}",
         "no_plan": "No ACDOCP plan for category {category} after {period}.",
         "no_logs": "No indexed logs for RCNTR {rcntr} in {period}.",
-        "log": "Year {gjahr} · Month {monat} · RCNTR {rcntr} · {author}",
+        "log": "Year {gjahr} · Month {monat} · RCNTR {rcntr} · scope {scope} · {author}",
         "na": "n/a",
     },
     "pt": {
@@ -200,7 +200,7 @@ LABELS = {
         "unit_na": "não calculável (direcionador real = 0)",
         "effects": "Efeitos totais:",
         "ranking": "Ranking de efeitos desfavoráveis (origem do desvio, calculado pelo Trino):",
-        "no_unfavorable": "nenhuma conta tem efeitos desfavoráveis",
+        "no_unfavorable": "nenhuma conta tem efeitos desfavoráveis: a origem é o direcionador {stagr} (Volume)",
         "matrix": "Matriz por conta (RACCT · real vs orçamento):",
         "behavior": {"F": "fixo", "V": "variável", "M": "misto"},
         "amount_only": "valor em USD",
@@ -218,7 +218,7 @@ LABELS = {
         "plan_total": "OPEX total planejado do horizonte (ACDOCP): {total} · OPEX unitário planejado do horizonte: {unit}",
         "no_plan": "Sem plano na ACDOCP para a categoria {category} depois de {period}.",
         "no_logs": "Não há diários indexados para RCNTR {rcntr} em {period}.",
-        "log": "Ano {gjahr} · Mês {monat} · RCNTR {rcntr} · {author}",
+        "log": "Ano {gjahr} · Mês {monat} · RCNTR {rcntr} · alcance {scope} · {author}",
         "na": "n/d",
     },
 }
@@ -321,7 +321,7 @@ def format_facts(analysis: dict, language: str) -> str:
     lines += [f"{rank}. {origin['racct']} {origin['texts'][language]}: {names[origin['effect']]} "
               f"{_usd(origin['amount'], language, signed=True)}" for rank, origin in enumerate(analysis["origins"], 1)]
     if not analysis["origins"]:
-        lines.append(f"- {labels['no_unfavorable']}")
+        lines.append("- " + labels["no_unfavorable"].format(stagr=driver["stagr"]))
     lines.append(labels["matrix"])
     lines += [_line_facts(line, driver, language) for line in analysis["lines"]]
     lines.append(labels["postings"])
@@ -356,6 +356,7 @@ def format_logs(logs: list[dict], language: str, rcntr: str, period: str) -> str
     return "\n\n".join(
         f"[{log['doc_id']} §{log['section']}] ("
         + LABELS[language]["log"].format(gjahr=log["gjahr"], monat=log["monat"], rcntr=log["rcntr"],
+                                         scope=", ".join(log["rcntr_scope"]),
                                          author=log["author_role"])
         + f")\n{log['content']}" for log in logs)
 
@@ -398,7 +399,7 @@ def answer_question(question: str, language: str = "es", engine: str = "nim", rc
                         "origins": [(o["racct"], o["effect"], o["amount"]) for o in analysis["origins"]]})
     timings["analysis_ms"] = _elapsed_ms(start)
 
-    # 2 · Logs of exactly that cost center and month (metadata pre-filter, then similarity).
+    # 2 · Logs that cover that cost center and month (metadata pre-filter on the RCNTR scope, then similarity).
     start, started_at = time.perf_counter(), _now()
     if not knowledge.stats()["embedded"]:
         raise KnowledgeBaseEmpty(message("kb_empty", language))
@@ -453,7 +454,8 @@ def answer_question(question: str, language: str = "es", engine: str = "nim", rc
         "sources": [{"doc_id": log["doc_id"], "title": log["title"], "author_role": log["author_role"],
                      "source_uri": log["source_uri"], "section": log["section"],
                      "similarity": round(float(log["similarity"]), 4), "excerpt": log["content"][:280],
-                     "metadata": {"Año": log["gjahr"], "Mes": log["monat"], "RCNTR": log["rcntr"]}} for log in logs],
+                     "metadata": {"Año": log["gjahr"], "Mes": log["monat"], "RCNTR": log["rcntr"],
+                                  "Alcance": list(log["rcntr_scope"])}} for log in logs],
         "models": {"chat": model_used, "embeddings": f"ollama/{s.ollama_embed_model}"},
         "timings_ms": timings,
     }

@@ -28,7 +28,7 @@ CREATE TABLE sap.acdoca (
     fiscyearper char(7)       NOT NULL,                   -- period/year YYYYPPP
     budat       date          NOT NULL,                   -- posting date
     blart       varchar(2)    NOT NULL,                   -- WA goods issue, WE service entry, SA payroll, AF depreciation
-    racct       varchar(20)   NOT NULL,                   -- G/L account (SAP RACCT is CHAR 10, see TECH_DEBT)
+    racct       varchar(10)   NOT NULL,                   -- G/L account (CHAR 10)
     koart       varchar(1)    NOT NULL,                   -- account type: S G/L, M material, A asset
     drcrk       char(1)       NOT NULL,                   -- S debit / H credit
     rwcur       varchar(5)    NOT NULL DEFAULT 'USD',     -- transaction currency
@@ -40,7 +40,7 @@ CREATE TABLE sap.acdoca (
     runit       varchar(3),                               -- base unit of measure of MSL (KG, L, PC, HR, KWH, M3, TO)
     msl         numeric(23,3) NOT NULL DEFAULT 0,         -- quantity in RUNIT (signed like the amount)
     kokrs       varchar(4)    NOT NULL DEFAULT 'CL01',    -- controlling area
-    rcntr       varchar(20),                              -- cost center (SAP KOSTL is CHAR 10, see TECH_DEBT)
+    rcntr       varchar(10),                              -- cost center (KOSTL, CHAR 10)
     prctr       varchar(10),                              -- profit center
     matnr       varchar(40),                              -- material
     sgtxt       varchar(50),                              -- item text
@@ -68,7 +68,7 @@ CREATE TABLE sap.acdocp (
     rldnr       varchar(2)    NOT NULL DEFAULT '0L',
     rbukrs      varchar(4)    NOT NULL,
     category    varchar(10)   NOT NULL,                   -- plan category = plan version (BUDG budget, RF18M forecast)
-    racct       varchar(20)   NOT NULL,                   -- G/L account (SAP RACCT is CHAR 10, see TECH_DEBT)
+    racct       varchar(10)   NOT NULL,                   -- G/L account (CHAR 10)
     rwcur       varchar(5)    NOT NULL DEFAULT 'USD',     -- transaction currency
     wsl         numeric(23,2) NOT NULL,
     rhcur       varchar(5)    NOT NULL DEFAULT 'USD',
@@ -85,7 +85,7 @@ CREATE TABLE sap.acdocp (
     vmsl        numeric(23,3) NOT NULL DEFAULT 0,         -- valuation quantity (planned consumption)
     vmfsl       numeric(23,3) NOT NULL DEFAULT 0,         -- fixed valuation quantity
     kokrs       varchar(4)    NOT NULL DEFAULT 'CL01',
-    rcntr       varchar(20)   NOT NULL,
+    rcntr       varchar(10)   NOT NULL,                   -- cost center (KOSTL, CHAR 10)
     prctr       varchar(10),
     periv       varchar(2)    NOT NULL DEFAULT 'K4',
     poper       char(3)       NOT NULL,
@@ -118,7 +118,7 @@ CREATE TABLE sap.finsskf (
     rbukrs    varchar(4)    NOT NULL,
     rrcty     char(1)       NOT NULL,                   -- record type: 0 actual, 1 plan
     category  varchar(10)   NOT NULL DEFAULT '',        -- plan category (plan values only)
-    rcntr     varchar(20)   NOT NULL,
+    rcntr     varchar(10)   NOT NULL,                   -- cost center (KOSTL, CHAR 10)
     prctr     varchar(10),
     kokrs     varchar(4)    NOT NULL DEFAULT 'CL01',
     logsys    varchar(10),                              -- origin: DISPATCH / PIMS / PORTMS (actual), SAC (plan)
@@ -163,7 +163,7 @@ BEGIN
     RETURN p_belnr;
 END $$;
 
--- Real-time activity for CDC demos: diesel goods issues (WA) of the haul fleet (RCNTR_MIN_TRAN) posted
+-- Real-time activity for CDC demos: diesel goods issues (WA) of the haul fleet (MIN_TRAN) posted
 -- into the open period at the actual diesel price of that period, so the timeline moves live.
 --   SELECT * FROM sap.simulate_activity(5);
 CREATE FUNCTION sap.simulate_activity(p_events int DEFAULT 5)
@@ -172,8 +172,8 @@ RETURNS TABLE (belnr varchar, budat date, racct varchar, rcntr varchar, msl nume
 LANGUAGE plpgsql AS $$
 #variable_conflict use_column
 DECLARE
-    c_rcntr CONSTANT varchar := 'RCNTR_MIN_TRAN';
-    c_racct CONSTANT varchar := 'RACCT_DIESEL';
+    c_rcntr CONSTANT varchar := 'MIN_TRAN';
+    c_racct CONSTANT varchar := 'DIESEL';
     v_budat date;
     v_price numeric;
     v_litres numeric;

@@ -18,7 +18,7 @@ class AskRequest(BaseModel):
                           description="Finance Manager question in ES, EN or PT (also accepted as `query`)")
     language: Language = Field(default="es", description="Answer language: ES | EN | PT (case-insensitive)")
     engine: Engine | None = Field(default=None, description="LLM engine: nim (NVIDIA NIM cloud) | ollama (local)")
-    rcntr: str | None = Field(default=None, pattern=r"^[A-Z0-9_]{1,20}$",
+    rcntr: str | None = Field(default=None, pattern=r"^[A-Z0-9_]{1,10}$",
                               description="Cost center (RCNTR); default: the first one with actual data")
     period: str | None = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
                                description="Actual month to explain (YYYY-MM); default: the latest actual month")
@@ -43,7 +43,7 @@ class Source(BaseModel):
     section: str
     similarity: float
     excerpt: str
-    metadata: dict[str, int | str]  # mandatory vector metadata: Año, Mes, RCNTR
+    metadata: dict[str, int | str | list[str]]  # mandatory vector metadata: Año, Mes, RCNTR (+ Alcance)
 
 
 class AskResponse(BaseModel):

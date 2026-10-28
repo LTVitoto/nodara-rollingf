@@ -1,21 +1,23 @@
 """Deterministic OPEX C1 analytics in Trino over the lakehouse (current state of the SAP tables replicated
-by CDC). The gold layer publishes two views, generated here from the master data:
+by CDC). The SQL reads the gold views that the trino-init job publishes before the backend starts
+(lakehouse/trino/gold — the backend never runs DDL):
   vw_opex_c1_pxq           master P x Q view: one row per version (ACTUAL, BUDG, RF18M), month, cost center
-                           (RCNTR) and G/L account (RACCT) — cost KSL, quantity MSL in its own unit RUOM (units
-                           are never added across accounts), price, driver (FINSSKF) and specific consumption
-  vw_opex_c1_pxq_variance  actual vs base budget (BUDG) on a flexible budget (fixed share KFSL / VMFSL stays,
-                           the variable share follows the driver): price P, efficiency Q, volume and spending
-Every figure the AI explains is computed here, in SQL; Python only validates inputs and shapes rows.
-Divisions go through nullif: a zero driver (e.g. no shipments) yields NULL, never an error."""
+                           (RCNTR) and G/L account (RACCT) — cost KSL, quantity MSL in its own unit RUOM, price,
+                           driver (FINSSKF) and specific consumption
+  vw_opex_c1_pxq_variance  actual vs base budget (BUDG) on a flexible budget: price P, efficiency Q, volume and
+                           spending effects
+Results are cached in memory per query until the lakehouse changes: the cache key carries the Delta version of
+the bronze tables, so a new CDC commit invalidates it and a stale figure is never served. Every figure the AI
+explains is computed here, in SQL; Python only validates inputs and shapes rows."""
 from __future__ import annotations
 
 import re
 import threading
+import time
 from decimal import Decimal
 
 import trino
 
-from . import masterdata
 from .settings import get_settings
 
 GROUP_CURRENCY = "USD"   # KSL of controlling area CL01
@@ -24,11 +26,12 @@ BUDGET_CATEGORY = "BUDG"  # base budget: the reference of the deviation of an ac
 STABLE_BAND = 0.01       # the plan is "stable" once every later month stays within ±1 % of its last month
 TOP_POSTINGS = 5
 TOP_EFFECTS = 5
+VERSION_TTL_S = 2.0      # one freshness probe per burst of queries (a request runs several)
 GOLD = "lakehouse.gold"
 PXQ_VIEW = f"{GOLD}.vw_opex_c1_pxq"
 VARIANCE_VIEW = f"{GOLD}.vw_opex_c1_pxq_variance"
 EFFECTS = ("price", "efficiency", "volume", "spending")
-COST_CENTER = re.compile(r"^[A-Z0-9_]{1,20}$")
+COST_CENTER = re.compile(r"^[A-Z0-9_]{1,10}$")  # KOSTL, CHAR 10
 CATEGORY = re.compile(r"^[A-Z0-9_]{1,10}$")
 KEY_FIGURE = re.compile(r"^[A-Z0-9_]{1,6}$")
 PERIOD = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -47,138 +50,64 @@ def _connect():
     return trino.dbapi.connect(host=s.trino_host, port=s.trino_port, user=s.trino_user, source="nodara-backend")
 
 
-def _run(sql: str, params: list | None = None) -> tuple[list, list[str]]:
+def query(sql: str, params: list | None = None) -> list[dict]:
     try:
         with _connect() as conn:
             cur = conn.cursor()
             cur.execute(sql, params)
             rows = cur.fetchall()
-            return rows, [c[0] for c in cur.description or []]
+            columns = [c[0] for c in cur.description]
     except trino.exceptions.TrinoUserError as exc:
         if exc.error_name in ("TABLE_NOT_FOUND", "SCHEMA_NOT_FOUND"):
             raise LakehouseNotReady(exc.message) from exc
         raise
-
-
-def query(sql: str, params: list | None = None) -> list[dict]:
-    rows, columns = _run(sql, params)
     return [{col: float(v) if isinstance(v, Decimal) else v for col, v in zip(columns, row)} for row in rows]
+
+
+_lock = threading.Lock()
+_results: dict[tuple, tuple[str, list[dict]]] = {}  # (sql, params) → (data version, rows)
+_version: tuple[float, str] = (0.0, "")
+_stats = {"hits": 0, "misses": 0}
+
+
+def data_version() -> str:
+    """Freshness token of the lakehouse: the latest Delta version of every bronze table (metadata only)."""
+    global _version
+    with _lock:
+        if time.monotonic() - _version[0] < VERSION_TTL_S:
+            return _version[1]
+    row = query("""
+        SELECT (SELECT max(version) FROM lakehouse.bronze."acdoca$history") AS acdoca,
+               (SELECT max(version) FROM lakehouse.bronze."acdocp$history") AS acdocp,
+               (SELECT max(version) FROM lakehouse.bronze."finsskf$history") AS finsskf""")[0]
+    token = f"{row['acdoca']}.{row['acdocp']}.{row['finsskf']}"
+    with _lock:
+        _version = (time.monotonic(), token)
+    return token
+
+
+def cached(sql: str, params: list | None = None) -> list[dict]:
+    """Query result kept in memory until the lakehouse changes (a new CDC commit in bronze)."""
+    key, version = (sql, tuple(params or ())), data_version()
+    with _lock:
+        hit = _results.get(key)
+        if hit and hit[0] == version:
+            _stats["hits"] += 1
+            return hit[1]
+        _stats["misses"] += 1
+    rows = query(sql, params)
+    with _lock:
+        _results[key] = (version, rows)
+    return rows
+
+
+def cache_stats() -> dict:
+    with _lock:
+        return {"entries": len(_results), **_stats, "data_version": _version[1]}
 
 
 # Period key 'YYYY-MM' from FISCYEARPER 'YYYYPPP' (fiscal year variant K4: period = calendar month).
 _PERIOD = "substr(fiscyearper, 1, 4) || '-' || substr(fiscyearper, 6, 2)"
-# Month of a FINSSKF totals value (GRTYP 2: the quantity of the month that starts on DATE_FROM).
-_SKF_PERIOD = "substr(CAST(date_from AS varchar), 1, 7)"
-
-
-def _unit_drivers() -> str:
-    """Cost center → statistical key figure of its unit OPEX, as an inline relation (from the master data)."""
-    pairs = [(rcntr, stagr) for rcntr, stagr in masterdata.UNIT_DRIVERS.items()
-             if COST_CENTER.match(rcntr) and KEY_FIGURE.match(stagr)]
-    return "(VALUES " + ", ".join(f"('{rcntr}', '{stagr}')" for rcntr, stagr in pairs) + ") AS u(rcntr, stagr)"
-
-
-def _gold_ddl() -> list[str]:
-    return [
-        f"CREATE SCHEMA IF NOT EXISTS {GOLD} WITH (location = 's3://lakehouse/gold/')",
-        f"""CREATE OR REPLACE VIEW {PXQ_VIEW}
-        COMMENT 'OPEX C1 P x Q per version, month, cost center (RCNTR) and G/L account (RACCT): KSL, MSL in RUOM, price, driver and specific consumption'
-        AS
-        WITH
-        lines AS (  -- one row per version, month, cost center and account: quantities never mix units
-            SELECT '{ACTUAL}' AS version, {_PERIOD} AS period, rcntr, racct, runit AS ruom,
-                   sum(ksl) AS ksl, sum(msl) AS msl, CAST(0 AS decimal(38, 2)) AS fixed_ksl,
-                   CAST(0 AS decimal(38, 3)) AS fixed_msl
-              FROM lakehouse.silver.acdoca
-             WHERE rcntr IS NOT NULL AND rkcur = '{GROUP_CURRENCY}'
-             GROUP BY 2, 3, 4, 5
-            UNION ALL
-            SELECT category, {_PERIOD}, rcntr, racct, rvunit, sum(ksl), sum(vmsl), sum(kfsl), sum(vmfsl)
-              FROM lakehouse.silver.acdocp
-             WHERE rkcur = '{GROUP_CURRENCY}'
-             GROUP BY 1, 2, 3, 4, 5),
-        drivers AS (  -- the unit-OPEX driver of each cost center (FINSSKF totals value of the month)
-            SELECT CASE WHEN f.rrcty = '0' THEN '{ACTUAL}' ELSE f.category END AS version, {_SKF_PERIOD} AS period,
-                   f.rcntr, f.stagr, max(f.runit) AS driver_unit, sum(f.msl) AS driver_qty
-              FROM lakehouse.silver.finsskf f
-              JOIN {_unit_drivers()} ON u.rcntr = f.rcntr AND u.stagr = f.stagr
-             WHERE f.grtyp = '2'
-             GROUP BY 1, 2, 3, 4)
-        SELECT l.version, l.period, l.rcntr, l.racct, l.ruom,
-               CAST(l.ksl AS double) AS ksl, CAST(l.msl AS double) AS msl,
-               CAST(l.fixed_ksl AS double) AS fixed_ksl, CAST(l.fixed_msl AS double) AS fixed_msl,
-               d.stagr, d.driver_unit, CAST(d.driver_qty AS double) AS driver_qty,
-               if(l.ruom IS NOT NULL, CAST(l.ksl AS double) / nullif(CAST(l.msl AS double), 0)) AS unit_price,
-               if(l.ruom IS NOT NULL, CAST(l.msl AS double) / nullif(CAST(d.driver_qty AS double), 0))
-                   AS specific_consumption,
-               CAST(l.ksl AS double) / nullif(CAST(d.driver_qty AS double), 0) AS cost_per_driver_unit
-          FROM lines l
-          LEFT JOIN drivers d ON d.version = l.version AND d.period = l.period AND d.rcntr = l.rcntr""",
-        f"""CREATE OR REPLACE VIEW {VARIANCE_VIEW}
-        COMMENT 'OPEX C1 actual vs base budget (BUDG) per month, cost center and G/L account on a flexible budget: price P, efficiency Q, volume and spending effects'
-        AS
-        WITH
-        joined AS (
-            SELECT coalesce(a.period, b.period) AS period, coalesce(a.rcntr, b.rcntr) AS rcntr,
-                   coalesce(a.racct, b.racct) AS racct, coalesce(a.ruom, b.ruom) AS ruom,
-                   coalesce(a.stagr, b.stagr) AS stagr, coalesce(a.driver_unit, b.driver_unit) AS driver_unit,
-                   coalesce(a.ksl, 0) AS actual_ksl, coalesce(a.msl, 0) AS actual_msl,
-                   coalesce(b.ksl, 0) AS budget_ksl, coalesce(b.msl, 0) AS budget_msl,
-                   coalesce(b.fixed_ksl, 0) AS budget_fixed_ksl, coalesce(b.fixed_msl, 0) AS budget_fixed_msl,
-                   a.unit_price AS actual_price, b.unit_price AS budget_price,
-                   a.specific_consumption AS actual_sc, b.specific_consumption AS budget_sc,
-                   max(a.driver_qty) OVER (PARTITION BY coalesce(a.period, b.period), coalesce(a.rcntr, b.rcntr))
-                       AS actual_driver,
-                   max(b.driver_qty) OVER (PARTITION BY coalesce(a.period, b.period), coalesce(a.rcntr, b.rcntr))
-                       AS budget_driver
-              FROM (SELECT * FROM {PXQ_VIEW} WHERE version = '{ACTUAL}') a
-              FULL OUTER JOIN (SELECT * FROM {PXQ_VIEW} WHERE version = '{BUDGET_CATEGORY}') b
-                ON b.period = a.period AND b.rcntr = a.rcntr AND b.racct = a.racct),
-        flexed AS (  -- activity = driver actual / budget (no flex without a budget driver)
-            SELECT j.*, j.ruom IS NOT NULL AND j.budget_msl > 0 AS physical,
-                   coalesce(j.actual_driver / nullif(j.budget_driver, 0), 1) AS activity,
-                   j.budget_ksl / nullif(j.budget_msl, 0) AS pb
-              FROM joined j),
-        effects AS (  -- flexible budget: the fixed share stays, the variable share follows the driver
-            SELECT f.*,
-                   f.budget_fixed_msl + (f.budget_msl - f.budget_fixed_msl) * f.activity AS flex_msl,
-                   CASE WHEN f.physical
-                        THEN f.pb * (f.budget_fixed_msl + (f.budget_msl - f.budget_fixed_msl) * f.activity)
-                        ELSE f.budget_fixed_ksl + (f.budget_ksl - f.budget_fixed_ksl) * f.activity END AS flex_ksl
-              FROM flexed f)
-        SELECT period, rcntr, racct, ruom, stagr, driver_unit, actual_driver, budget_driver,
-               CASE WHEN budget_ksl <> 0 AND budget_fixed_ksl = budget_ksl THEN 'F'
-                    WHEN budget_fixed_ksl = 0 THEN 'V' ELSE 'M' END AS behavior,
-               round(actual_ksl, 2) AS actual_ksl, round(budget_ksl, 2) AS budget_ksl, round(flex_ksl, 2) AS flex_ksl,
-               round(actual_ksl - budget_ksl, 2) AS variance,
-               round((actual_ksl - budget_ksl) / nullif(budget_ksl, 0) * 100, 1) AS variance_pct,
-               if(ruom IS NOT NULL, actual_msl) AS actual_msl, if(ruom IS NOT NULL, budget_msl) AS budget_msl,
-               if(physical, flex_msl) AS flex_msl,
-               actual_price, budget_price, round((actual_price - budget_price) / nullif(budget_price, 0) * 100, 1)
-                   AS price_pct,
-               actual_sc, budget_sc, round((actual_sc - budget_sc) / nullif(budget_sc, 0) * 100, 1) AS sc_pct,
-               if(physical, round(actual_ksl - pb * actual_msl, 2)) AS price_effect,
-               if(physical, round(pb * (actual_msl - flex_msl), 2)) AS efficiency_effect,
-               round(flex_ksl - budget_ksl, 2) AS volume_effect,
-               if(NOT physical, round(actual_ksl - flex_ksl, 2)) AS spending_effect
-          FROM effects""",
-    ]
-
-
-_gold_lock = threading.Lock()
-_gold_ready = False
-
-
-def ensure_gold() -> None:
-    """Publishes the gold views (CREATE OR REPLACE) once per process, as soon as the silver layer exists."""
-    global _gold_ready
-    if _gold_ready:
-        return
-    with _gold_lock:
-        if not _gold_ready:
-            for statement in _gold_ddl():
-                _run(statement)
-            _gold_ready = True
 
 
 def _validate(rcntr: str | None = None, category: str | None = None, period: str | None = None,
@@ -190,7 +119,7 @@ def _validate(rcntr: str | None = None, category: str | None = None, period: str
 
 def cost_centers() -> list[dict]:
     """Cost centers with actual data and/or plan data: their plan categories (the budget apart)."""
-    return query(f"""
+    return cached(f"""
         WITH a AS (SELECT rcntr, min({_PERIOD}) AS first_actual, max({_PERIOD}) AS last_actual
                      FROM lakehouse.silver.acdoca WHERE rcntr IS NOT NULL GROUP BY rcntr),
              p AS (SELECT rcntr, array_sort(array_agg(DISTINCT category) FILTER (WHERE category <> ?)) AS categories,
@@ -212,8 +141,7 @@ def timeline(rcntr: str, category: str) -> list[dict]:
     """One row per month and account: the actual months with their budget alongside, then the plan
     months of the category; OPEX, driver and unit OPEX of each month and version."""
     _validate(rcntr, category)
-    ensure_gold()
-    return query(f"""
+    return cached(f"""
         WITH
         cutoff AS (SELECT max({_PERIOD}) AS period FROM lakehouse.silver.acdoca WHERE rcntr = ? AND rkcur = ?),
         scoped AS (  -- actuals and their budget up to the last actual month, the plan after it
@@ -244,8 +172,7 @@ def variance(rcntr: str, period: str | None = None) -> list[dict]:
     one row per account and effect, with the cost center totals alongside (window aggregates) and the rank
     of every effect (1 = the largest unfavorable amount, the origin of the deviation)."""
     _validate(rcntr, period=period)
-    ensure_gold()
-    rows = query(f"""
+    rows = cached(f"""
         WITH
         frame AS (SELECT {_cutoff(period)} AS period FROM lakehouse.silver.acdoca WHERE rcntr = ? AND rkcur = ?),
         lines AS (
@@ -280,8 +207,7 @@ def matrix(period: str | None = None) -> list[dict]:
     """P x Q matrix of every cost center for the latest actual month (or the requested one): one row per
     cost center and account with the cost center totals and its top unfavorable effect."""
     _validate(period=period)
-    ensure_gold()
-    return query(f"""
+    return cached(f"""
         WITH
         frame AS (SELECT {_cutoff(period)} AS period FROM lakehouse.silver.acdoca WHERE rcntr IS NOT NULL AND rkcur = ?),
         lines AS (
@@ -314,8 +240,7 @@ def forecast(rcntr: str, category: str, period: str) -> dict:
     """Plan horizon after the actuals: first and last month, totals, stabilization point of the unit OPEX
     and the last planned unit OPEX against the analyzed actual period (NULL when its driver is zero)."""
     _validate(rcntr, category, period)
-    ensure_gold()
-    rows = query(f"""
+    rows = cached(f"""
         WITH
         cutoff AS (SELECT max({_PERIOD}) AS period FROM lakehouse.silver.acdoca WHERE rcntr = ? AND rkcur = ?),
         months AS (  -- plan months after the actuals and the analyzed actual month: OPEX, driver, unit OPEX
@@ -351,7 +276,7 @@ def forecast(rcntr: str, category: str, period: str) -> dict:
 def top_postings(rcntr: str, period: str) -> list[dict]:
     """Largest cost center postings of the period (ACDOCA line items) with their quantity."""
     _validate(rcntr, period=period)
-    return query(f"""
+    return cached(f"""
         SELECT belnr, CAST(budat AS varchar) AS budat, racct, sgtxt, ksl, msl, runit
           FROM lakehouse.silver.acdoca
          WHERE rcntr = ? AND {_PERIOD} = ?

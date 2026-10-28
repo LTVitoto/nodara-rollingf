@@ -1,23 +1,26 @@
 // UI regression test against the live frontend + backend (real lakehouse data, mocked /api/ask):
-// language selector (ES / EN / PT) with server-side persistence, the 5 cost centers of the value chain,
-// continuous chart (3 actual months with their BUDG budget tick + 18 plan months) with keyboard tooltip,
-// measure toggle per driver (USD/h, USD/t, USD/WMT) and table view, KPI tiles against the budget, and
-// the AI chat carrying language + engine + cost center, with its footer translated in place.
+// language selector (ES / EN / PT) with server-side persistence, the 12 cost centers of the OPEX C1 value
+// chain grouped by area, continuous chart (6 actual months with their BUDG budget tick + 18 plan months) with
+// keyboard tooltip, measure toggle (OPEX ↔ unit OPEX of the driver) and table view, KPI tiles against the
+// budget, the expandable P x Q matrix (specific consumption per input, origin of the deviation, zero driver
+// shown as not computable), and the AI chat carrying language + engine + cost center.
 // Runs in the Playwright image:  make ui-test
 const { chromium } = require("playwright-core");
 
 const BASE_URL = process.env.BASE_URL ?? "http://frontend:3000";
-const RCNTR = "RCNTR_MINA_CAEX";
-const PORT = "RCNTR_PUERTO_EMB";
-const VALUE_CHAIN = ["RCNTR_MINA_CAEX", "RCNTR_MINA_TRUCK", "RCNTR_LIXIV_SXEW", "RCNTR_CONCEN_FLOT", PORT];
+const RCNTR = "RCNTR_MIN_PERF";
+const PORT = "RCNTR_PTO_EMBA";
+const FLOTATION = "RCNTR_CON_FLOT";
+const VALUE_CHAIN = ["RCNTR_MIN_PERF", "RCNTR_MIN_TRON", "RCNTR_MIN_CARG", "RCNTR_MIN_TRAN", "RCNTR_CON_MOLI",
+                     FLOTATION, "RCNTR_CON_RELA", "RCNTR_LIX_RIEG", "RCNTR_LIX_SX", "RCNTR_LIX_EW", "RCNTR_PTO_FILT", PORT];
 const EXPECTED = {
-  es: { lang: "es", name: "Español", h1: "Rolling Forecast de OPEX · 18 meses", label: "Pregunta del Gerente de Finanzas", logs: "Bitácoras",
+  es: { lang: "es", name: "Español", h1: "Rolling Forecast de OPEX C1 · 18 meses", label: "Pregunta del Gerente de Finanzas", logs: "Bitácoras",
         tooltip: "oct 26", table: "Ver tabla",
         meta: ["Cifras verificadas contra Trino", "Idioma de la respuesta", "Tiempo total", "Motor"] },
-  en: { lang: "en", name: "English", h1: "OPEX Rolling Forecast · 18 months", label: "Finance Manager question", logs: "Logs",
+  en: { lang: "en", name: "English", h1: "C1 OPEX Rolling Forecast · 18 months", label: "Finance Manager question", logs: "Logs",
         tooltip: "Oct 26", table: "Show table",
         meta: ["Figures checked against Trino", "Answer language", "Total time", "Engine"] },
-  pt: { lang: "pt-BR", name: "Português", h1: "Rolling Forecast de OPEX · 18 meses", label: "Pergunta do Gerente Financeiro", logs: "Diários",
+  pt: { lang: "pt-BR", name: "Português", h1: "Rolling Forecast de OPEX C1 · 18 meses", label: "Pergunta do Gerente Financeiro", logs: "Diários",
         tooltip: "out. de 26", table: "Ver tabela",
         meta: ["Números conferidos com Trino", "Idioma da resposta", "Tempo total", "Motor"] },
 };
@@ -25,9 +28,8 @@ const ENGINES = { nim: "NVIDIA NIM (Cloud)", ollama: "Ollama (Local)" };
 
 function mockAnswer(body) {
   const nim = body.engine === "nim";
-  const metric = { current: 1, budget: 1, previous: 1, delta_budget: 0, delta_budget_pct: 0, delta_previous: 0,
-                   delta_previous_pct: 0, share_pct: null };
-  const driver = { stagr: "TONEMB", runit: "WMT", symbol: "WMT", texts: { es: "x", en: "x", pt: "x" } };
+  const x = { es: "x", en: "x", pt: "x" };
+  const driver = { stagr: "TONFLO", runit: "TO", symbol: "t", texts: x, decimals: 4, actual: 1, budget: 1, delta_pct: 0 };
   return {
     answer: "mock answer", language: String(body.language).toLowerCase(),
     language_check: { requested: "es", detected: "es", status: "ok" },
@@ -35,11 +37,10 @@ function mockAnswer(body) {
     engine: body.engine, model_used: nim ? "nim/openai/gpt-oss-20b" : "ollama/llama3.1:8b", attempts: [],
     trace_id: "t-1", trace_url: "http://localhost:3001/project/nodara-rollingf/traces/t-1",
     rcntr: body.rcntr, period: "2026-10",
-    analysis: { rcntr: body.rcntr, rcntr_texts: { es: "x", en: "x", pt: "x" }, currency: "USD", category: "RF18M",
-                category_texts: { es: "x", en: "x", pt: "x" }, budget_category: "BUDG",
-                budget_texts: { es: "x", en: "x", pt: "x" }, period: "2026-10", previous_period: "2026-09",
-                driver: "TONEMB", opex: metric, drivers: [{ ...driver, ...metric }],
-                unit_costs: [{ ...driver, ...metric, decimals: 4 }], accounts: [], top_postings: [],
+    analysis: { rcntr: body.rcntr, rcntr_texts: x, area: "CONCENTRADORA", area_texts: x, currency: "USD", category: "RF18M",
+                category_texts: x, budget_category: "BUDG", budget_texts: x, period: "2026-10", driver,
+                opex: { actual: 1, budget: 1, variance: 0, variance_pct: 0 }, unit_cost: { actual: 1, budget: 1, delta_pct: 0 },
+                effects: { price: 0, efficiency: 0, volume: 0, spending: null }, origins: [], lines: [], top_postings: [],
                 forecast: { months: 0 } },
     retrieval_filter: { "Año": 2026, "Mes": 10, RCNTR: body.rcntr }, sources: [],
     models: { chat: "mock", embeddings: "mock" }, timings_ms: { analysis_ms: 300, generate_ms: 4100 },
@@ -88,78 +89,101 @@ async function expectFooter(page, code) {
     await page.getByRole("button", { name: EXPECTED.es.name }).click();
     await expectLanguage(page, "es");
 
-    // Cost center selector (value chain, from the lakehouse) and continuous timeline computed by Trino.
+    // Cost center selector (value chain grouped by area, from the lakehouse) and continuous timeline (Trino).
     const select = page.getByTestId("cost-center-select");
     await page.waitForFunction((rcntr) => document.querySelector("[data-testid=cost-center-select]")?.value === rcntr, RCNTR, { timeout: 30000 });
     const options = await select.locator("option").evaluateAll((nodes) => nodes.map((node) => node.value));
-    if (JSON.stringify(options) !== JSON.stringify(VALUE_CHAIN)) throw new Error(`cost centers ${JSON.stringify(options)}`);
-    console.log(`  ✔ selector: ${options.length} cost centers of the value chain (${options.join(", ")}), default ${RCNTR}`);
+    const groups = await select.locator("optgroup").count();
+    if (JSON.stringify(options) !== JSON.stringify(VALUE_CHAIN) || groups !== 4) {
+      throw new Error(`cost centers ${JSON.stringify(options)} in ${groups} groups`);
+    }
+    console.log(`  ✔ selector: ${options.length} cost centers of the OPEX C1 value chain in ${groups} areas, default ${RCNTR}`);
     await page.getByTestId("chart").waitFor({ timeout: 30000 });
     const actual = await page.getByTestId("bar-actual").count();
     const plan = await page.getByTestId("bar-plan").count();
     const ticks = await page.getByTestId("budget-marker").count();
-    if (actual !== 3 || plan !== 18 || ticks !== 3) {
-      throw new Error(`chart has ${actual} actual + ${plan} plan months and ${ticks} budget ticks (expected 3 + 18, 3 ticks)`);
+    if (actual !== 6 || plan !== 18 || ticks !== 6) {
+      throw new Error(`chart has ${actual} actual + ${plan} plan months and ${ticks} budget ticks (expected 6 + 18, 6 ticks)`);
     }
     console.log(`  ✔ chart: ${actual} actual months (ACDOCA) with ${ticks} budget ticks (BUDG) + ${plan} plan months (RF18M)`);
 
     // The UI must show exactly what Trino computed (live API values: the simulator may have posted more).
     const es = (value, digits = 0, signed = false) => new Intl.NumberFormat("es", {
       minimumFractionDigits: digits, maximumFractionDigits: digits, signDisplay: signed ? "exceptZero" : "auto" }).format(value);
+    const sig = (value) => new Intl.NumberFormat("es", { maximumSignificantDigits: 4 }).format(value);
     const pct = (value) => `${es(value, 1, true)} %`;
     const timeline = async (rcntr) => (await page.request.get(`${BASE_URL}/api/opex/timeline?rcntr=${rcntr}`)).json();
     const live = await timeline(RCNTR);
+    const decimals = live.driver.decimals;
     const current = live.periods.filter((m) => m.kind === "actual").at(-1);
-    await page.getByTestId("bar-actual").nth(2).locator("rect").focus();
+    await page.getByTestId("bar-actual").nth(5).locator("rect").focus();
     const tooltip = await page.getByTestId("chart-tooltip").innerText();
     for (const expected of [EXPECTED.es.tooltip, `USD ${es(current.opex)}`, `USD ${es(current.budget.opex)}`,
-                            pct(current.budget.delta_pct), es(current.drivers.HOROP.unit_cost, 2)]) {
+                            pct(current.budget.delta_pct), es(current.unit_cost, decimals)]) {
       if (!tooltip.toLowerCase().includes(expected.toLowerCase())) {
         throw new Error(`keyboard tooltip of ${current.period} misses "${expected}" (Trino): ${tooltip}`);
       }
     }
     console.log(`  ✔ keyboard tooltip on the current month: ${tooltip.split("\n").slice(0, 7).join(" · ")}`);
 
-    await page.getByRole("button", { name: "USD/h" }).click();
+    await page.getByRole("button", { name: `USD/${live.driver.symbol}` }).click();
     const chartText = await page.getByTestId("chart").textContent();
-    const unit = es(current.drivers.HOROP.unit_cost, 2);
-    if (!chartText.includes(unit)) throw new Error(`USD/h measure does not label ${unit}: ${chartText.slice(0, 200)}`);
+    const unit = es(current.unit_cost, decimals);
+    if (!chartText.includes(unit)) throw new Error(`unit OPEX measure does not label ${unit}: ${chartText.slice(0, 200)}`);
     await page.getByRole("button", { name: "OPEX (USD)" }).click();
     await page.getByRole("button", { name: EXPECTED.es.table }).click();
     const rows = await page.getByTestId("chart-table").locator("tbody tr").count();
-    if (rows !== 21) throw new Error(`table view has ${rows} rows (expected 21)`);
+    if (rows !== 24) throw new Error(`table view has ${rows} rows (expected 24)`);
     await page.getByRole("button", { name: "Ver gráfico" }).click();
-    const caexUnit = live.summary.unit_costs.find((u) => u.stagr === "HOROP");
     const kpi = await page.getByTestId("kpi-unit").innerText();
-    if (!kpi.includes(`${es(caexUnit.current, 2)} USD/h`) || !kpi.includes(pct(caexUnit.delta_budget_pct))) {
+    if (!kpi.includes(`${es(live.summary.unit_cost.actual, decimals)} USD/${live.driver.symbol}`) ||
+        !kpi.includes(pct(live.summary.unit_cost.delta_pct))) {
       throw new Error(`unit OPEX tile: ${kpi}`);
     }
-    console.log(`  ✔ measure toggle (USD/h → ${unit}), table view (${rows} rows), KPI tile "${kpi.replace(/\n/g, " ")}"`);
+    console.log(`  ✔ measure toggle (USD/${live.driver.symbol} → ${unit}), table view (${rows} rows), KPI tile "${kpi.replace(/\n/g, " ")}"`);
 
-    // Port: the unit OPEX is per shipped wet tonne (USD/WMT) and rises against the budget.
+    // P x Q matrix: expanding a cost center shows the specific consumption of every input (RACCT) and marks the
+    // origin of the deviation; a zero driver is shown as not computable, never as an error.
+    const matrix = await (await page.request.get(`${BASE_URL}/api/opex/matrix`)).json();
+    const centers = Object.fromEntries(matrix.areas.flatMap((a) => a.cost_centers).map((c) => [c.rcntr, c]));
+    await page.getByTestId(`matrix-toggle-${RCNTR}`).click();
+    const perf = page.getByTestId(`matrix-lines-${RCNTR}`);
+    const lines = await perf.getByTestId("pxq-line").count();
+    const origin = centers[RCNTR].origin;
+    const steel = centers[RCNTR].lines.find((l) => l.racct === origin.racct);
+    const consumption = await perf.locator(`[data-racct=${origin.racct}]`).getByTestId("pxq-consumption").innerText();
+    const originCell = await perf.getByTestId("origin-cell").innerText();
+    if (lines !== centers[RCNTR].lines.length || !consumption.includes(`${sig(steel.actual_sc)} / ${sig(steel.budget_sc)}`) ||
+        originCell !== es(origin.amount, 0, true) || origin.racct !== "RACCT_ACEROS" || origin.effect !== "efficiency") {
+      throw new Error(`matrix ${RCNTR}: ${lines} lines, consumption "${consumption}", origin ${JSON.stringify(origin)} cell "${originCell}"`);
+    }
+    console.log(`  ✔ matrix ${RCNTR}: ${lines} inputs (RACCT) · ${origin.racct} consumo específico ${consumption.replace(/\n/g, " ")} · origin Q ${originCell}`);
+    await page.getByTestId(`matrix-toggle-${PORT}`).click();
+    const port = page.getByTestId(`matrix-lines-${PORT}`);
+    const labor = await port.locator("[data-racct=RACCT_LABOR]").getByTestId("pxq-consumption").innerText();
+    const portUnit = await page.getByTestId(`matrix-row-${PORT}`).getByTestId("matrix-unit-cost").innerText();
+    if (!labor.includes("n/d (impulsor 0)") || !portUnit.includes("n/d (impulsor 0)") || centers[PORT].origin !== null) {
+      throw new Error(`matrix ${PORT}: labor "${labor}", unit "${portUnit}", origin ${JSON.stringify(centers[PORT].origin)}`);
+    }
+    console.log(`  ✔ matrix ${PORT}: driver 0 → consumo específico y OPEX unitario "n/d (impulsor 0)", sin efecto desfavorable`);
+
+    // Port selected: the unit OPEX tile says it cannot be computed (driver = 0) instead of dividing by zero.
     await select.selectOption(PORT);
-    await page.waitForFunction(() => document.querySelector("[data-testid=kpi-unit]")?.textContent?.includes("USD/WMT"),
+    await page.waitForFunction(() => document.querySelector("[data-testid=kpi-driver]")?.textContent?.includes("TONEMB"),
                                null, { timeout: 30000 });
-    const port = await timeline(PORT);
-    const portUnit = port.summary.unit_costs.find((u) => u.stagr === "TONEMB");
     const measures = await page.getByRole("group", { name: "Medida" }).getByRole("button").allInnerTexts();
-    if (JSON.stringify(measures) !== JSON.stringify(["OPEX (USD)", "USD/WMT"])) throw new Error(`port measures ${JSON.stringify(measures)}`);
     const portKpi = await page.getByTestId("kpi-unit").innerText();
     const portDriver = await page.getByTestId("kpi-driver").innerText();
-    if (!portKpi.includes(`${es(portUnit.current, 4)} USD/WMT`) || !portKpi.includes(pct(portUnit.delta_budget_pct)) ||
-        !portDriver.includes(`${es(port.summary.drivers[0].current)} WMT`)) {
-      throw new Error(`port tiles: "${portKpi}" / "${portDriver}"`);
+    if (JSON.stringify(measures) !== JSON.stringify(["OPEX (USD)", "USD/WMT"]) || !portKpi.includes("no calculable: impulsor = 0") ||
+        !portDriver.includes("0 WMT")) {
+      throw new Error(`port: measures ${JSON.stringify(measures)}, tiles "${portKpi}" / "${portDriver}"`);
     }
-    await page.getByRole("button", { name: "USD/WMT" }).click();
-    await page.getByTestId("bar-actual").nth(2).locator("rect").focus();
-    const portTooltip = await page.getByTestId("chart-tooltip").innerText();
-    const portMonth = port.periods.filter((m) => m.kind === "actual").at(-1);
-    for (const expected of [es(portMonth.drivers.TONEMB.unit_cost, 4), es(portMonth.budget.drivers.TONEMB.unit_cost, 4),
-                            pct(portMonth.budget.drivers.TONEMB.unit_delta_pct)]) {
-      if (!portTooltip.includes(expected)) throw new Error(`port tooltip misses "${expected}": ${portTooltip}`);
-    }
-    console.log(`  ✔ ${PORT}: measures ${measures.join(" / ")} · KPI "${portKpi.replace(/\n/g, " ")}" · ` +
-                `tooltip ${es(portMonth.drivers.TONEMB.unit_cost, 4)} vs budget ${es(portMonth.budget.drivers.TONEMB.unit_cost, 4)}`);
+    console.log(`  ✔ ${PORT}: measures ${measures.join(" / ")} · KPI "${portKpi.replace(/\n/g, " ")}" · "${portDriver.replace(/\n/g, " ")}"`);
+
+    // "Analizar" in the matrix selects that cost center for the chart and the chat.
+    await page.getByTestId(`matrix-row-${FLOTATION}`).getByRole("button", { name: /Analizar/ }).click();
+    await page.waitForFunction((rcntr) => document.querySelector("[data-testid=cost-center-select]")?.value === rcntr, FLOTATION, { timeout: 10000 });
+    console.log(`  ✔ matrix "Analizar" → selector ${FLOTATION}`);
 
     // Language + engine + cost center routing: every question carries all three.
     const sent = [];
@@ -176,8 +200,8 @@ async function expectFooter(page, code) {
       await page.getByTestId("answer").nth(sent.length - 1).waitFor();
       const body = sent.at(-1) ?? {};
       if (body.language !== code.toUpperCase() || body.engine !== engine || body.question !== `routing check ${code}` ||
-          body.rcntr !== PORT) {
-        throw new Error(`[${code}] /api/ask body ${JSON.stringify(body)} misses language ${code.toUpperCase()}, engine ${engine} or ${PORT}`);
+          body.rcntr !== FLOTATION) {
+        throw new Error(`[${code}] /api/ask body ${JSON.stringify(body)} misses language ${code.toUpperCase()}, engine ${engine} or ${FLOTATION}`);
       }
       const footer = await expectFooter(page, code);
       if (!footer.includes(ENGINES[engine])) throw new Error(`[${code}] footer does not show the engine ${ENGINES[engine]}`);

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# E2E QA of the Nodara Rolling Forecast stack. Exit code 0 only if every check passes.
-#   make smoke    → re-seeds silently first (make fresh), then: infrastructure, the financial data model
-#                   (ACDOCA / ACDOCP / FINSSKF with their documented SAP fields, plan categories BUDG + RF18M),
-#                   the 5 approved cases of the C1 value chain, CDC → Delta bronze → silver, deterministic unit
-#                   OPEX and deviation vs budget (Trino = PostgreSQL), raw layer + lineage, pgvector metadata
-#                   (Año / Mes / RCNTR), the AI on the NIM engine in ES / EN / PT (CAEX) and on the port unit
-#                   OPEX, the local Ollama contingency, Langfuse traces, real-time CDC, egress gateway, air-gap
+# E2E QA of the Nodara GenAI Financial Twin (OPEX C1 rolling forecast). Exit code 0 only if every check passes.
+#   make smoke    → re-seeds silently first (make fresh), then: infrastructure; the SAP financial model with its
+#                   P x Q fields (ACDOCA MSL/RUNIT, ACDOCP VMSL/RVUNIT/KPRICE/KFSL); the 12 cost centers of the
+#                   OPEX C1 value chain and the 4 approved anomalies; CDC → Delta bronze → silver → gold
+#                   (vw_opex_c1_pxq grouped by RCNTR x RACCT, no division by zero); price / efficiency / volume /
+#                   spending effects Trino = PostgreSQL line by line; raw layer + lineage; pgvector metadata
+#                   (Año / Mes / RCNTR); the AI naming the originating RACCT and its P / Q effect in ES / EN / PT
+#                   (NIM) plus the local Ollama contingency; Langfuse traces; real-time CDC; egress and air-gap
 #   ./scripts/smoke-test.sh alone runs on the current data (diagnostics only: the simulator posts to ACDOCA).
 #   SMOKE_RAG=0 make smoke skips the LLM calls; they also skip until `make models` was run.
 set -uo pipefail
@@ -13,38 +14,25 @@ cd "$(dirname "$0")/.."
 if [[ -f .env ]]; then set -a; source .env; set +a; fi
 
 DC="docker compose"
-RCNTR=RCNTR_MINA_CAEX
-PORT=RCNTR_PUERTO_EMB
 CATEGORY=RF18M
 BUDGET=BUDG
-# Value chain of the C1 OPEX: cost center → driver of its unit OPEX (FINSSKF STAGR) and its bitácora of 2026-10.
-CENTERS=(RCNTR_MINA_CAEX RCNTR_MINA_TRUCK RCNTR_LIXIV_SXEW RCNTR_CONCEN_FLOT RCNTR_PUERTO_EMB)
-declare -A DRIVER=([RCNTR_MINA_CAEX]=HOROP [RCNTR_MINA_TRUCK]=TONMOV [RCNTR_LIXIV_SXEW]=TONAPI
-                   [RCNTR_CONCEN_FLOT]=TONPRO [RCNTR_PUERTO_EMB]=TONEMB)
-declare -A LOG=([RCNTR_MINA_CAEX]=BIT-MANT-CAEX-2026-10 [RCNTR_MINA_TRUCK]=BIT-OPER-MINA-2026-10
-                [RCNTR_LIXIV_SXEW]=BIT-MANT-SXEW-2026-10 [RCNTR_CONCEN_FLOT]=BIT-OPER-FLOT-2026-10
-                [RCNTR_PUERTO_EMB]=BIT-OPER-PUERTO-2026-10)
-# Approved cases, 2026-10 vs BUDG: account with the largest overrun, total OPEX and drivers (% computed in PostgreSQL).
-declare -A CASE=([RCNTR_MINA_CAEX]="0061100100=67.8|OPEX=15.3|HOROP=-13.4,TONMOV=-13.4"
-                 [RCNTR_MINA_TRUCK]="0061100200=16.7|OPEX=7.0|TONMOV=-15.0"
-                 [RCNTR_LIXIV_SXEW]="0061100100=141.9|OPEX=11.2|TONAPI=-14.0"
-                 [RCNTR_CONCEN_FLOT]="0061100400=42.4|OPEX=5.9|TONPRO=-0.9"
-                 [RCNTR_PUERTO_EMB]="0063100100=0.3|OPEX=-0.3|TONEMB=-18.5")
-declare -A STORY=([RCNTR_MINA_CAEX]="repuestos sobre presupuesto (inyectores Komatsu) y caída de horas operativas"
-                  [RCNTR_MINA_TRUCK]="combustible sobre presupuesto (motobombas de achique) y extracción -15 %"
-                  [RCNTR_LIXIV_SXEW]="repuestos sobre presupuesto (bomba de ácido) y caída de toneladas apiladas"
-                  [RCNTR_CONCEN_FLOT]="reactivos sobre presupuesto (xantato 15 g/t) con la molienda en presupuesto"
-                  [RCNTR_PUERTO_EMB]="costos fijos en presupuesto y caída de toneladas embarcadas (marejadas)")
+PERIOD=2026-10                    # current month: the latest actual period
+CENTERS=(RCNTR_MIN_PERF RCNTR_MIN_TRON RCNTR_MIN_CARG RCNTR_MIN_TRAN RCNTR_CON_MOLI RCNTR_CON_FLOT RCNTR_CON_RELA
+         RCNTR_LIX_RIEG RCNTR_LIX_SX RCNTR_LIX_EW RCNTR_PTO_FILT RCNTR_PTO_EMBA)
+# The 4 approved anomalies of 2026-10 and their bitácora.
+declare -A LOG=([RCNTR_MIN_PERF]=BIT-PERF-2026-10 [RCNTR_CON_FLOT]=BIT-FLOT-2026-10 [RCNTR_CON_MOLI]=BIT-MOLI-2026-10
+                [RCNTR_PTO_EMBA]=BIT-EMBA-2026-10)
 PASS=0 FAIL=0
 ok()   { printf '  \033[32m✔\033[0m %s\n' "$*"; PASS=$((PASS + 1)); }
 ko()   { printf '  \033[31m✘\033[0m %s\n' "$*"; FAIL=$((FAIL + 1)); }
 skip() { printf '  \033[33m•\033[0m %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+report() { while IFS='|' read -r verdict message; do [[ $verdict == OK ]] && ok "$message" || ko "$message"; done; }
 # </dev/null: `compose exec` must never swallow the stdin of the surrounding read loops.
 s4()   { $DC exec -T s4hana-db psql -U "$S4_DB_ADMIN_USER" -d s4hana -tAc "$1" </dev/null 2>/dev/null; }
 kb()   { $DC exec -T vector-db psql -U "$VECTOR_DB_USER" -d knowledge -tAc "$1" </dev/null 2>/dev/null; }
 sql()  { $DC exec -T trino trino --output-format TSV --execute "$1" </dev/null 2>/dev/null; }
-api()  { curl -fsS --max-time "${2:-30}" "http://127.0.0.1:${FRONTEND_PORT:-3000}/api/$1"; }
+api()  { curl -fsS --max-time "${2:-60}" "http://127.0.0.1:${FRONTEND_PORT:-3000}/api/$1"; }
 s3()   { curl -fsS --aws-sigv4 "aws:amz:us-east-1:s3" --user "$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD" \
               "http://127.0.0.1:${MINIO_API_PORT:-9000}/$1"; }
 s3head() { curl -fsSI --aws-sigv4 "aws:amz:us-east-1:s3" --user "$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD" \
@@ -83,8 +71,11 @@ trace_check() {  # $1 trace id, $2 model: the trace reaches Langfuse with the op
     ko "Langfuse: traza '$1' incompleta (userId $user, $generations generaciones, $spans spans): ${trace:0:160}"
   fi
 }
-rag_check() {  # $1 engine, $2 language, $3 question, $4 RCNTR, $5 unit OPEX (Trino), $6 cause word the answer must cite
-  local engine=$1 language=$2 question=$3 rcntr=$4 expected_unit=$5 cause=${6:-} response start tenths took verdict
+# The AI must name the originating account (RACCT) and its effect, as computed by Trino, and cite the filtered log.
+# $1 engine, $2 language, $3 question, $4 RCNTR, $5 token of the origin (RACCT or STAGR), $6 effect label of that
+# language, $7 "first" = both must be in the first line (format of the NIM prompt) | "any" = anywhere (local engine)
+rag_check() {
+  local engine=$1 language=$2 question=$3 rcntr=$4 token=$5 label=$6 where=$7 response start tenths took verdict
   start=$(date +%s%N)
   response=$(curl -fsS --max-time 600 -X POST -H 'content-type: application/json' \
     -d "{\"question\":\"$question\",\"language\":\"$language\",\"engine\":\"$engine\",\"rcntr\":\"$rcntr\"}" \
@@ -92,26 +83,70 @@ rag_check() {  # $1 engine, $2 language, $3 question, $4 RCNTR, $5 unit OPEX (Tr
   tenths=$(( ($(date +%s%N) - start) / 100000000 ))
   took="$((tenths / 10)).$((tenths % 10)) s"
   [[ $engine == nim && $tenths -gt 150 ]] && took+=" (sobre el objetivo de 15 s)"
-  verdict=$(json "(lambda u: '|'.join([data['model_used'], data['language_check']['detected'] or '-', data['period'],
-    str(u['current']), 'USD/' + u['symbol'], '%+.1f' % u['delta_budget_pct'],
-    data['sources'][0]['doc_id'] if data['sources'] else '-',
-    json.dumps(data['sources'][0]['metadata'], ensure_ascii=False, sort_keys=True) if data['sources'] else '-',
-    '%d/%d' % (data['figures_check']['grounded'], data['figures_check']['checked']),
-    ','.join(data['figures_check']['ungrounded']), data['trace_id'] or '-',
-    str('$cause' in data['answer'].lower()) if '$cause' else '-']))(
-    next(u for u in data['analysis']['unit_costs'] if u['stagr'] == data['analysis']['driver']))" <<<"$response")
-  IFS='|' read -r model detected period unit symbol vs_budget doc meta figures ungrounded trace cited <<<"$verdict"
-  if [[ $model == "$engine/"* && $detected == "${language,,}" && $period == 2026-10 && $unit == "$expected_unit" &&
-        $doc == "${LOG[$rcntr]}" && $meta == "{\"Año\": 2026, \"Mes\": 10, \"RCNTR\": \"$rcntr\"}" && $cited != False ]]; then
-    ok "IA $language · $model en $took → $rcntr $period: OPEX unitario $unit $symbol ($vs_budget % vs $BUDGET, Trino) ·" \
-       "bitácora $doc $meta${cause:+ · causa «$cause…» citada} · respuesta en '$detected' ·" \
-       "cifras ancladas a Trino $figures${ungrounded:+ (no ancladas: $ungrounded)}"
+  verdict=$(TOKEN="$token" LABEL="$label" WHERE="$where" python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+answer = data["answer"].replace("*", "")
+first = next((line for line in answer.splitlines() if line.strip()), "")
+scope = first if os.environ["WHERE"] == "first" else answer
+origin = data["analysis"]["origins"][0] if data["analysis"]["origins"] else None
+cited = os.environ["TOKEN"] in scope and os.environ["LABEL"] in scope
+print("|".join([data["model_used"], data["language_check"]["detected"] or "-", data["period"],
+    "%s:%s" % (origin["racct"], origin["effect"]) if origin else "-",
+    data["sources"][0]["doc_id"] if data["sources"] else "-",
+    json.dumps(data["sources"][0]["metadata"], ensure_ascii=False, sort_keys=True) if data["sources"] else "-",
+    "%d/%d" % (data["figures_check"]["grounded"], data["figures_check"]["checked"]),
+    ",".join(data["figures_check"]["ungrounded"]), data["trace_id"] or "-", str(cited), first.strip()[:110]]))' \
+    <<<"$response" 2>/dev/null)
+  IFS='|' read -r model detected period origin doc meta figures ungrounded trace cited first <<<"$verdict"
+  if [[ $model == "$engine/"* && $detected == "${language,,}" && $period == "$PERIOD" && $cited == True &&
+        $doc == "${LOG[$rcntr]}" && $meta == "{\"Año\": 2026, \"Mes\": 10, \"RCNTR\": \"$rcntr\"}" ]]; then
+    ok "IA $language · $model en $took → $rcntr: «${first}» (Trino: ${origin}) · bitácora $doc $meta ·" \
+       "respuesta en '$detected' · cifras ancladas a Trino $figures${ungrounded:+ (no ancladas: $ungrounded)}"
     trace_check "$trace" "$model"
   else
-    ko "IA $language/$engine $rcntr → modelo='${model:-ninguno}' idioma='$detected' período='$period' unitario='$unit'" \
-       "bitácora='$doc' $meta causa '$cause'=$cited ${response:0:200}"
+    ko "IA $language/$engine $rcntr → modelo='${model:-ninguno}' idioma='$detected' período='$period' origen='$origin'" \
+       "cita '$token' + '$label'=$cited bitácora='$doc' $meta primera línea «$first» ${response:0:160}"
   fi
 }
+# Reference P x Q decomposition of the current month in PostgreSQL (same flexible budget as the Trino gold view):
+# rcntr|racct|ruom|actual|budget|price|efficiency|volume|spending|sc_actual|sc_budget|price_actual|price_budget
+PXQ_PG="
+WITH a AS (SELECT rcntr, racct, max(runit) AS ruom, sum(ksl) AS ksl, sum(msl) AS msl FROM sap.acdoca
+            WHERE rcntr IS NOT NULL AND fiscyearper = '${PERIOD/-/0}' GROUP BY 1, 2),
+     b AS (SELECT rcntr, racct, max(rvunit) AS ruom, sum(ksl) AS ksl, sum(vmsl) AS msl, sum(kfsl) AS fksl, sum(vmfsl) AS fmsl
+             FROM sap.acdocp WHERE category = '$BUDGET' AND fiscyearper = '${PERIOD/-/0}' GROUP BY 1, 2),
+     d AS (SELECT r.rcntr, r.msl AS da, p.msl AS db FROM sap.finsskf r
+             JOIN sap.finsskf p ON p.rcntr = r.rcntr AND p.stagr = r.stagr AND p.date_from = r.date_from
+                               AND p.category = '$BUDGET'
+            WHERE r.rrcty = '0' AND r.date_from = '$PERIOD-01'),
+     j AS (SELECT coalesce(a.rcntr, b.rcntr) AS rcntr, coalesce(a.racct, b.racct) AS racct, coalesce(a.ruom, b.ruom) AS ruom,
+                  coalesce(a.ksl, 0) AS ak, coalesce(a.msl, 0) AS aq, coalesce(b.ksl, 0) AS bk, coalesce(b.msl, 0) AS bq,
+                  coalesce(b.fksl, 0) AS fk, coalesce(b.fmsl, 0) AS fq
+             FROM a FULL JOIN b ON b.rcntr = a.rcntr AND b.racct = a.racct),
+     x AS (SELECT j.*, d.da, d.db, j.ruom IS NOT NULL AND j.bq > 0 AS physical,
+                  coalesce(d.da / nullif(d.db, 0), 1) AS act, j.bk / nullif(j.bq, 0) AS pb
+             FROM j LEFT JOIN d USING (rcntr)),
+     y AS (SELECT x.*, x.fq + (x.bq - x.fq) * x.act AS flex_q,
+                  CASE WHEN x.physical THEN x.pb * (x.fq + (x.bq - x.fq) * x.act) ELSE x.fk + (x.bk - x.fk) * x.act END AS flex_k
+             FROM x)
+SELECT concat_ws('|', rcntr, racct, coalesce(ruom, '-'), round(ak, 2), round(bk, 2),
+       coalesce(round(CASE WHEN physical THEN ak - pb * aq END, 2)::text, '-'),
+       coalesce(round(CASE WHEN physical THEN pb * (aq - flex_q) END, 2)::text, '-'), round(flex_k - bk, 2),
+       coalesce(round(CASE WHEN NOT physical THEN ak - flex_k END, 2)::text, '-'),
+       coalesce((CASE WHEN ruom IS NOT NULL THEN aq / nullif(da, 0) END)::text, '-'),
+       coalesce((CASE WHEN ruom IS NOT NULL THEN bq / nullif(db, 0) END)::text, '-'),
+       coalesce((CASE WHEN ruom IS NOT NULL THEN ak / nullif(aq, 0) END)::text, '-'),
+       coalesce((CASE WHEN ruom IS NOT NULL THEN bk / nullif(bq, 0) END)::text, '-'))
+  FROM y ORDER BY rcntr, racct"
+PXQ_TRINO="
+SELECT concat_ws('|', rcntr, racct, coalesce(ruom, '-'), format('%.2f', actual_ksl), format('%.2f', budget_ksl),
+       if(price_effect IS NULL, '-', format('%.2f', price_effect)),
+       if(efficiency_effect IS NULL, '-', format('%.2f', efficiency_effect)), format('%.2f', volume_effect),
+       if(spending_effect IS NULL, '-', format('%.2f', spending_effect)),  -- format('%.2f', NULL) prints "nu"
+       coalesce(CAST(actual_sc AS varchar), '-'), coalesce(CAST(budget_sc AS varchar), '-'),
+       coalesce(CAST(actual_price AS varchar), '-'), coalesce(CAST(budget_price AS varchar), '-'))
+  FROM lakehouse.gold.vw_opex_c1_pxq_variance WHERE period = '$PERIOD' ORDER BY rcntr, racct"
 
 step "1 · Contenedores y salud"
 for svc in s4hana-db kafka debezium minio unity-catalog trino delta-sink vector-db ollama egress-proxy langfuse-db \
@@ -124,7 +159,7 @@ for job in minio-init debezium-init; do
   [[ $code == 0 ]] && ok "$job completado (exit 0)" || ko "$job exit=${code:-n/a}"
 done
 
-step "2 · Modelo financiero SAP (S/4HANA simulado: ACDOCA · ACDOCP · FINSSKF)"
+step "2 · Modelo financiero SAP (S/4HANA simulado: ACDOCA · ACDOCP · FINSSKF) con P x Q"
 tables=$(s4 "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema = 'sap'")
 counts=$(s4 "SELECT string_agg(relname || '=' || n_live_tup, ' ' ORDER BY relname) FROM pg_stat_user_tables WHERE schemaname = 'sap'")
 [[ $tables == acdoca,acdocp,finsskf ]] && ok "esquema sap = exactamente ACDOCA, ACDOCP y FINSSKF ($counts)" || ko "tablas SAP: '$tables'"
@@ -132,74 +167,96 @@ pk() { s4 "SELECT string_agg(a.attname, ',' ORDER BY array_position(i.indkey::in
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$1'::regclass AND i.indisprimary"; }
 pk_acdocp=$(pk sap.acdocp)
 pk_finsskf=$(pk sap.finsskf)
-rvers=$(s4 "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'sap' AND column_name = 'rvers'")
-[[ $pk_acdocp == rclnt,reqtsn,datapakid,record && $pk_finsskf == rclnt,stagr,recid,date_from && $rvers == 0 ]] \
-  && ok "campos documentados: ACDOCP ($pk_acdocp; versión = CATEGORY) · FINSSKF ($pk_finsskf; RRCTY + CATEGORY)" \
-  || ko "claves ACDOCP='$pk_acdocp' FINSSKF='$pk_finsskf' columnas RVERS=$rvers"
+invented=$(s4 "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'sap' AND column_name IN ('rvers', 'ruom')")
+[[ $pk_acdocp == rclnt,reqtsn,datapakid,record && $pk_finsskf == rclnt,stagr,recid,date_from && $invented == 0 ]] \
+  && ok "campos documentados: ACDOCP ($pk_acdocp; versión = CATEGORY) · FINSSKF ($pk_finsskf) · sin RVERS ni RUOM inventados" \
+  || ko "claves ACDOCP='$pk_acdocp' FINSSKF='$pk_finsskf' columnas inventadas=$invented"
+pxq_fields=$(s4 "SELECT string_agg(table_name || '.' || column_name, ',' ORDER BY table_name, column_name) FROM information_schema.columns
+                  WHERE table_schema = 'sap' AND table_name IN ('acdoca', 'acdocp')
+                    AND column_name IN ('ksl', 'msl', 'runit', 'racct', 'vmsl', 'vmfsl', 'rvunit', 'kprice', 'kfsl')")
+[[ $pxq_fields == acdoca.ksl,acdoca.msl,acdoca.racct,acdoca.runit,acdocp.kfsl,acdocp.kprice,acdocp.ksl,acdocp.racct,acdocp.rvunit,acdocp.vmfsl,acdocp.vmsl ]] \
+  && ok "P x Q en campos SAP reales: ACDOCA KSL + MSL/RUNIT; ACDOCP KSL + VMSL/RVUNIT + KPRICE + parte fija KFSL/VMFSL" \
+  || ko "campos P x Q: '$pxq_fields'"
 [[ $(s4 "SELECT count(*) FROM (SELECT belnr FROM sap.acdoca GROUP BY belnr HAVING sum(wsl) <> 0 OR sum(hsl) <> 0 OR sum(ksl) <> 0) x") == 0 ]] \
   && ok "ACDOCA cuadrado por documento (Σ WSL = Σ HSL = Σ KSL = 0)" || ko "ACDOCA descuadrado"
 [[ $(s4 "SELECT count(*) FROM (SELECT rkcur FROM sap.acdoca UNION ALL SELECT rkcur FROM sap.acdocp) x WHERE rkcur <> 'USD'") == 0 ]] \
   && ok "OPEX en moneda de grupo KSL (RKCUR = USD en ACDOCA y ACDOCP)" || ko "moneda de grupo distinta de USD"
-categories=$(s4 "SELECT (SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM sap.acdocp) || '|' ||
-                         (SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM sap.finsskf WHERE rrcty = '1')")
-[[ $categories == "$BUDGET,$CATEGORY|$BUDGET,$CATEGORY" ]] \
-  && ok "categorías de plan en ACDOCP y FINSSKF: $BUDGET (presupuesto base) + $CATEGORY (rolling forecast)" \
-  || ko "categorías de plan ACDOCP|FINSSKF: '$categories'"
+plan=$(s4 "SELECT (SELECT string_agg(DISTINCT category, ',' ORDER BY category) FROM sap.acdocp) || '|' ||
+                  (SELECT max(abs(ksl - round(kprice * vmsl, 2))) FROM sap.acdocp WHERE kprice IS NOT NULL) || '|' ||
+                  (SELECT count(*) FROM sap.acdocp WHERE kfsl > ksl OR vmfsl > vmsl)")
+[[ $plan == "$BUDGET,$CATEGORY|0.00|0" ]] \
+  && ok "ACDOCP $BUDGET + $CATEGORY con KSL = KPRICE x VMSL exacto en todas las líneas físicas y parte fija ≤ total" \
+  || ko "plan P x Q: '$plan'"
 published=$(s4 "SELECT count(*) FROM pg_publication_tables WHERE pubname = 'nodara_s4_pub'")
 [[ $published == 3 ]] && ok "publicación CDC nodara_s4_pub cubre las 3 tablas financieras" || ko "publicación CDC: $published tablas"
 
-step "3 · Cadena de valor C1: 5 casos aprobados (seed estricto)"
+step "3 · Cadena de valor OPEX C1 (12 centros de costo, seed de producción) y anomalías aprobadas"
 centers_s4=$(s4 "SELECT string_agg(DISTINCT rcntr, ' ' ORDER BY rcntr) FROM sap.acdoca WHERE rcntr IS NOT NULL")
 [[ $centers_s4 == "$(printf '%s\n' "${CENTERS[@]}" | sort | xargs)" ]] \
-  && ok "ACDOCA: exactamente los 5 centros de costo aprobados ($centers_s4)" || ko "centros de costo en ACDOCA: '$centers_s4'"
-for rc in "${CENTERS[@]}"; do
-  shape=$(s4 "SELECT (SELECT string_agg(DISTINCT fiscyearper, ',' ORDER BY fiscyearper) FROM sap.acdoca WHERE rcntr = '$rc') || '|' ||
-                     (SELECT string_agg(DISTINCT fiscyearper, ',' ORDER BY fiscyearper) FROM sap.acdocp
-                       WHERE rcntr = '$rc' AND category = '$BUDGET') || '|' ||
-                     (SELECT string_agg(DISTINCT to_char(date_from, 'YYYY\"0\"MM'), ',' ORDER BY to_char(date_from, 'YYYY\"0\"MM'))
-                        FROM sap.finsskf WHERE rcntr = '$rc' AND category = '$BUDGET' AND stagr = '${DRIVER[$rc]}') || '|' ||
-                     (SELECT count(DISTINCT fiscyearper) || ':' || min(fiscyearper) || ':' || max(fiscyearper) FROM sap.acdocp
-                       WHERE rcntr = '$rc' AND category = '$CATEGORY') || '|' ||
-                     (SELECT (max(opex) - min(opex)) / max(opex) <= 0.01
-                        FROM (SELECT sum(ksl) AS opex FROM sap.acdocp WHERE rcntr = '$rc' AND category = '$CATEGORY'
-                               GROUP BY fiscyearper ORDER BY fiscyearper DESC LIMIT 12) l)")
-  [[ $shape == "2026008,2026009,2026010|2026008,2026009,2026010|2026008,2026009,2026010|18:2026011:2028004|true" ]] \
-    && ok "$rc: 3 meses reales (ACDOCA) con su presupuesto $BUDGET (ACDOCP + FINSSKF ${DRIVER[$rc]}) y 18 meses $CATEGORY que convergen (±1 %)" \
-    || ko "$rc: forma del seed '$shape'"
-done
-rising=$(s4 "SELECT string_agg(ksl::bigint::text, ' → ' ORDER BY fiscyearper) || '|' || bool_and(ksl > coalesce(prev, 0))
-             FROM (SELECT fiscyearper, sum(ksl) AS ksl, lag(sum(ksl)) OVER (ORDER BY fiscyearper) AS prev
-                     FROM sap.acdoca WHERE rcntr = '$RCNTR' AND racct = '0061100100' GROUP BY fiscyearper) x")
-[[ ${rising#*|} == true ]] && ok "$RCNTR: Repuestos (0061100100) al alza mes a mes: USD ${rising%|*}" || ko "repuestos CAEX='$rising'"
-seen=0
-while read -r rc result; do
-  [[ -n $rc ]] || continue
-  seen=$((seen + 1))
-  [[ $result == "${CASE[$rc]:-?}" ]] && ok "caso $rc: ${STORY[$rc]} (2026-10 vs $BUDGET: $result)" \
-    || ko "caso $rc: '$result' (esperado '${CASE[$rc]:-sin caso aprobado}')"
-done < <(s4 "WITH acc AS (
-                 SELECT rcntr, racct, a.ksl AS actual, b.ksl AS budget
-                   FROM (SELECT rcntr, racct, sum(ksl) AS ksl FROM sap.acdoca
-                          WHERE fiscyearper = '2026010' AND rcntr IS NOT NULL GROUP BY 1, 2) a
-                   JOIN (SELECT rcntr, racct, sum(ksl) AS ksl FROM sap.acdocp
-                          WHERE category = '$BUDGET' AND fiscyearper = '2026010' GROUP BY 1, 2) b USING (rcntr, racct)),
-               top AS (SELECT DISTINCT ON (rcntr) rcntr, racct || '=' || round((actual - budget) / budget * 100, 1) AS item
-                         FROM acc ORDER BY rcntr, actual - budget DESC),
-               opex AS (SELECT rcntr, 'OPEX=' || round((sum(actual) - sum(budget)) / sum(budget) * 100, 1) AS item
-                          FROM acc GROUP BY 1),
-               drv AS (SELECT r.rcntr, string_agg(r.stagr || '=' || round((r.msl - p.msl) / p.msl * 100, 1), ',' ORDER BY r.stagr) AS item
-                         FROM sap.finsskf r
-                         JOIN sap.finsskf p ON p.rcntr = r.rcntr AND p.stagr = r.stagr AND p.date_from = r.date_from
-                                           AND p.category = '$BUDGET'
-                        WHERE r.rrcty = '0' AND r.date_from = '2026-10-01' GROUP BY 1)
-          SELECT rcntr || ' ' || top.item || '|' || opex.item || '|' || drv.item
-            FROM top JOIN opex USING (rcntr) JOIN drv USING (rcntr) ORDER BY 1")
-[[ $seen -eq ${#CENTERS[@]} ]] || ko "casos evaluados: $seen de ${#CENTERS[@]}"
-legacy=$(( $(s4 "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('but000','matdoc','ukmbp_cms_sgm','dfkkbptaxnum','qmel','aufk','resb','tcurr')") + \
+  && ok "ACDOCA: exactamente los 12 centros de costo de la cadena (mina, concentradora, lixiviación, puerto)" \
+  || ko "centros de costo en ACDOCA: '$centers_s4'"
+shape=$(s4 "SELECT string_agg(rcntr || ':' || shape, ' ' ORDER BY rcntr) FROM (
+              SELECT a.rcntr,
+                     (SELECT count(DISTINCT fiscyearper) || '/' || min(fiscyearper) || '-' || max(fiscyearper) FROM sap.acdoca x WHERE x.rcntr = a.rcntr)
+                     || '|' || (SELECT count(DISTINCT fiscyearper) FROM sap.acdocp p WHERE p.rcntr = a.rcntr AND p.category = '$BUDGET')
+                     || '|' || (SELECT count(DISTINCT fiscyearper) || '/' || min(fiscyearper) || '-' || max(fiscyearper) FROM sap.acdocp p
+                                 WHERE p.rcntr = a.rcntr AND p.category = '$CATEGORY')
+                     || '|' || (SELECT count(DISTINCT stagr) || '/' || count(*) FROM sap.finsskf f WHERE f.rcntr = a.rcntr)
+                     || '|' || (CASE WHEN (SELECT count(DISTINCT racct) FROM sap.acdoca x WHERE x.rcntr = a.rcntr) BETWEEN 4 AND 5
+                                     THEN 'ok' ELSE 'cuentas' END) AS shape
+                FROM (SELECT DISTINCT rcntr FROM sap.acdoca WHERE rcntr IS NOT NULL) a) s")
+expected_shape=$(printf '%s:6/2026005-2026010|6|18/2026011-2028004|1/30|ok ' "${CENTERS[@]}" | xargs -n1 | sort | xargs)
+[[ $shape == "$expected_shape" ]] \
+  && ok "cada centro: 6 meses reales (ACDOCA) + 6 de $BUDGET + 18 de $CATEGORY (2026-11 → 2028-04), 4-5 cuentas RACCT y 1 impulsor FINSSKF (30 valores)" \
+  || ko "forma del seed: '${shape:0:220}'"
+units=$(s4 "SELECT (SELECT count(*) FROM (SELECT rcntr, racct, fiscyearper FROM sap.acdoca WHERE rcntr IS NOT NULL GROUP BY 1, 2, 3
+                                           HAVING count(DISTINCT coalesce(runit, '-')) > 1) x) || '|' ||
+                   (SELECT count(*) FROM (SELECT category, rcntr, racct, fiscyearper FROM sap.acdocp GROUP BY 1, 2, 3, 4
+                                           HAVING count(DISTINCT coalesce(rvunit, '-')) > 1) y) || '|' ||
+                   (SELECT count(DISTINCT runit) FROM sap.acdoca WHERE rcntr IS NOT NULL)")
+[[ ${units%|*} == "0|0" ]] \
+  && ok "una sola unidad por centro, cuenta y mes (${units##*|} unidades: KG, L, PC, HR, KWH, M3, TO): nunca se suman litros con piezas" \
+  || ko "cuentas con más de una unidad (real|plan): '$units'"
+weekly=$(s4 "SELECT count(*) || '|' || count(*) FILTER (WHERE docs = 4) FROM (
+               SELECT rcntr, racct, fiscyearper, count(DISTINCT belnr) AS docs FROM sap.acdoca
+                WHERE rcntr IS NOT NULL AND blart = 'WA' AND usnam <> 'SIMULATOR' GROUP BY 1, 2, 3) x")
+[[ ${weekly%|*} -gt 0 && ${weekly%|*} == "${weekly#*|}" ]] \
+  && ok "consumos de bodega (WA) contabilizados semanalmente: 4 documentos por insumo y mes (${weekly%|*} grupos)" \
+  || ko "salidas de bodega semanales: '$weekly'"
+legacy=$(( $(s4 "SELECT count(*) FROM sap.acdoca WHERE rcntr LIKE 'RCNTR_MINA_%' OR rcntr IN ('RCNTR_LIXIV_SXEW', 'RCNTR_CONCEN_FLOT', 'RCNTR_PUERTO_EMB')") + \
            $(s4 "SELECT count(*) FROM sap.acdoca WHERE rbukrs <> 'CL01'") + \
-           $(kb "SELECT count(*) FROM kb.documents WHERE doc_id LIKE 'AU-%' OR source_uri LIKE '%raw-manuals%'") + \
-           $(s3 "" 2>/dev/null | grep -c '<Name>raw-manuals</Name>') ))
-[[ $legacy -eq 0 ]] && ok "cero rastros del modelo anterior (tablas SAP, BR01, manuales AU en pgvector y bucket raw-manuals)" || ko "$legacy rastros del modelo anterior"
+           $(kb "SELECT count(*) FROM kb.documents WHERE doc_id LIKE 'BIT-MANT-%' OR doc_id LIKE 'BIT-OPER-%' OR doc_id LIKE 'AU-%'") ))
+[[ $legacy -eq 0 ]] && ok "cero rastros del PoC (centros RCNTR_MINA_*/LIXIV/CONCEN/PUERTO, bitácoras y manuales anteriores)" || ko "$legacy rastros del PoC"
+s4 "$PXQ_PG" | python3 -c '
+import sys
+rows = [line.split("|") for line in sys.stdin.read().split() if line]
+num = lambda v: None if v == "-" else float(v)
+lines = {}
+for r in rows:
+    lines.setdefault(r[0], {})[r[1]] = {"actual": num(r[3]), "budget": num(r[4]), "price": num(r[5]), "efficiency": num(r[6]),
+                                       "volume": num(r[7]), "spending": num(r[8]), "sc_a": num(r[9]), "sc_b": num(r[10])}
+def origin(rcntr):
+    effects = [(v, racct, e) for racct, line in lines[rcntr].items() for e in ("price", "efficiency", "volume", "spending")
+               if (v := line[e]) is not None and v > 0]
+    return max(effects) if effects else None
+def case(rcntr, ok, message):
+    print(("OK" if ok else "KO") + "|caso " + rcntr + ": " + message)
+o = origin("RCNTR_MIN_PERF"); steel, diesel = lines["RCNTR_MIN_PERF"]["RACCT_ACEROS"], lines["RCNTR_MIN_PERF"]["RACCT_DIESEL"]
+case("RCNTR_MIN_PERF", o and o[1:] == ("RACCT_ACEROS", "efficiency") and round(o[0]) == 359578 and steel["price"] == 0
+     and abs(diesel["sc_a"] / diesel["sc_b"] - 1) < 0.01,
+     "origen RACCT_ACEROS · eficiencia (Q) +%s USD (precio 0; consumo %.7f vs %.7f PC/m); diésel en línea (%.3f vs %.3f L/m)"
+     % (round(o[0]) if o else "-", steel["sc_a"], steel["sc_b"], diesel["sc_a"], diesel["sc_b"]))
+o = origin("RCNTR_CON_FLOT"); xan = lines["RCNTR_CON_FLOT"]["RACCT_REACTIVOS"]
+case("RCNTR_CON_FLOT", o and o[1:] == ("RACCT_REACTIVOS", "price") and round(o[0]) == 57113 and abs(xan["efficiency"]) < 0.1 * xan["price"],
+     "origen RACCT_REACTIVOS · precio (P) +%s USD (eficiencia %s USD: dosificación en estándar)" % (round(o[0]) if o else "-", round(xan["efficiency"])))
+o = origin("RCNTR_CON_MOLI"); labor = lines["RCNTR_CON_MOLI"]["RACCT_LABOR"]
+case("RCNTR_CON_MOLI", o and o[1:] == ("RACCT_LABOR", "efficiency") and round(o[0]) == 85722 and labor["price"] > 0,
+     "origen RACCT_LABOR · eficiencia (Q) +%s USD por horas extra, más precio (P) +%s USD por recargo" % (round(o[0]) if o else "-", round(labor["price"])))
+port = lines["RCNTR_PTO_EMBA"]
+case("RCNTR_PTO_EMBA", origin("RCNTR_PTO_EMBA") is None and port["RACCT_LABOR"]["actual"] == port["RACCT_LABOR"]["budget"]
+     and port["RACCT_MANTEN"]["actual"] == port["RACCT_MANTEN"]["budget"] and port["RACCT_LABOR"]["sc_a"] is None,
+     "impulsor en 0: RACCT_LABOR y RACCT_MANTEN fijos (real = presupuesto), consumo específico no calculable, sin efecto desfavorable")
+' | report
 
 step "4 · CDC (Debezium → Kafka)"
 status=$(curl -fsS "http://127.0.0.1:${DEBEZIUM_PORT:-8083}/connectors/s4hana-cdc/status" 2>/dev/null)
@@ -207,7 +264,7 @@ status=$(curl -fsS "http://127.0.0.1:${DEBEZIUM_PORT:-8083}/connectors/s4hana-cd
 topics=$($DC exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list </dev/null 2>/dev/null | grep '^s4hana\.sap\.' | tr '\n' ' ')
 [[ $topics == "s4hana.sap.acdoca s4hana.sap.acdocp s4hana.sap.finsskf " ]] && ok "tópicos CDC: $topics" || ko "tópicos CDC: '$topics'"
 
-step "5 · Lakehouse (Trino: S/4 en vivo + Delta bronze + silver; Unity Catalog)"
+step "5 · Lakehouse (Trino: S/4 en vivo + Delta bronze + silver + gold P x Q; Unity Catalog)"
 for table in acdoca acdocp finsskf; do
   IFS=$'\t' read -r source live bronze silver < <(sql "SELECT $(s4 "SELECT count(*) FROM sap.$table"),
       (SELECT count(*) FROM s4hana.sap.$table), (SELECT count(*) FROM lakehouse.bronze.$table), (SELECT count(*) FROM lakehouse.silver.$table)")
@@ -218,51 +275,81 @@ done
 uc=$(curl -fsS "http://127.0.0.1:${UNITY_CATALOG_PORT:-8081}/api/2.1/unity-catalog/tables?catalog_name=nodara&schema_name=bronze" 2>/dev/null |
      grep -o '"name":"[a-z0-9_]*","catalog_name"' | cut -d'"' -f4 | sort | tr '\n' ' ')
 [[ $uc == "acdoca acdocp finsskf " ]] && ok "Unity Catalog nodara.bronze (EXTERNAL DELTA): $uc" || ko "Unity Catalog bronze: '$uc'"
+api "opex/matrix" >/dev/null  # the backend publishes the gold views on its first analysis
+gold=$(sql "SELECT table_name FROM lakehouse.information_schema.views WHERE table_schema = 'gold' ORDER BY 1" | xargs)
+[[ $gold == "vw_opex_c1_pxq vw_opex_c1_pxq_variance" ]] && ok "capa gold: lakehouse.gold.$gold" || ko "vistas gold: '$gold'"
+IFS=$'\t' read -r rows groups mixed < <(sql "SELECT count(*), count(DISTINCT (version, period, rcntr, racct)),
+    (SELECT count(*) FROM (SELECT version, period, rcntr, racct FROM lakehouse.gold.vw_opex_c1_pxq GROUP BY 1, 2, 3, 4
+                            HAVING count(DISTINCT coalesce(ruom, '-')) > 1) x)
+  FROM lakehouse.gold.vw_opex_c1_pxq")
+[[ -n $rows && $rows == "$groups" && $mixed == 0 ]] \
+  && ok "vw_opex_c1_pxq agrupa por versión, mes, RCNTR y RACCT: $rows filas = $groups grupos, 0 grupos con unidades mezcladas" \
+  || ko "vw_opex_c1_pxq: $rows filas, $groups grupos, $mixed grupos con unidades mezcladas"
+totals_trino=$(sql "SELECT version || '=' || format('%.2f', sum(ksl)) FROM lakehouse.gold.vw_opex_c1_pxq GROUP BY version ORDER BY version" | xargs)
+totals_pg=$(s4 "SELECT string_agg(v || '=' || k, ' ' ORDER BY v) FROM (
+                  SELECT 'ACTUAL' AS v, sum(ksl)::numeric(20,2)::text AS k FROM sap.acdoca WHERE rcntr IS NOT NULL
+                  UNION ALL SELECT category, sum(ksl)::numeric(20,2)::text FROM sap.acdocp GROUP BY category) x")
+[[ $totals_trino == "$totals_pg" ]] && ok "gold = S/4 por versión (KSL): $totals_trino" || ko "totales gold '$totals_trino' vs S/4 '$totals_pg'"
+IFS=$'\t' read -r zero zero_sc lines_var < <(sql "SELECT count(*) FILTER (WHERE driver_qty = 0),
+    count(*) FILTER (WHERE driver_qty = 0 AND (specific_consumption IS NOT NULL OR cost_per_driver_unit IS NOT NULL)),
+    (SELECT count(*) + count(efficiency_effect) * 0 + count(actual_sc) * 0 FROM lakehouse.gold.vw_opex_c1_pxq_variance)
+  FROM lakehouse.gold.vw_opex_c1_pxq")
+[[ ${zero:-0} -gt 0 && $zero_sc == 0 && ${lines_var:-0} -gt 0 ]] \
+  && ok "sin división por cero: $zero líneas con impulsor FINSSKF = 0 (puerto 2026-10) dan consumo específico y costo unitario NULL; las $lines_var líneas de la varianza se calculan sin error" \
+  || ko "división por cero: impulsor 0 en '$zero' líneas, '$zero_sc' con ratio calculado, varianza '$lines_var'"
 
-step "6 · OPEX unitario y desviación vs presupuesto deterministas (Trino = PostgreSQL, sin IA)"
+step "6 · P x Q determinista (Trino gold = PostgreSQL, sin IA)"
+pg_lines=$(s4 "$PXQ_PG")
+trino_lines=$(sql "$PXQ_TRINO")
+PG_LINES="$pg_lines" TRINO_LINES="$trino_lines" PERIOD="$PERIOD" python3 -c '
+import os
+def parse(text):
+    return {tuple(f[:2]): f for f in (line.split("|") for line in text.split() if line)}
+pg, tr = parse(os.environ["PG_LINES"]), parse(os.environ["TRINO_LINES"])
+bad = []
+for key in sorted(set(pg) | set(tr)):
+    a, b = pg.get(key), tr.get(key)
+    if not a or not b:
+        bad.append("/".join(key)); continue
+    if a[2] != b[2]:
+        bad.append("/".join(key) + ":unidad")
+    for i, (x, y) in enumerate(zip(a[3:], b[3:]), 3):
+        if x == "-" or y == "-":
+            if x != y: bad.append("/".join(key) + ":%d" % i)
+        elif i <= 8 and abs(float(x) - float(y)) > 0.02:
+            bad.append("/".join(key) + ":%d" % i)
+        elif i > 8 and abs(float(x) - float(y)) > 1e-9 * max(1, abs(float(x))):
+            bad.append("/".join(key) + ":%d" % i)
+centers = len({k[0] for k in pg})
+if pg and not bad:
+    print("OK|%d líneas RCNTR x RACCT de %d centros en %s: costo, efectos precio / eficiencia / volumen / gasto, consumo específico y precio unitario idénticos en Trino y PostgreSQL" % (len(pg), centers, os.environ.get("PERIOD", "")))
+else:
+    print("KO|P x Q Trino vs PostgreSQL: %d líneas PG, %d Trino, diferencias: %s" % (len(pg), len(tr), ", ".join(bad[:8])))
+' | report
+series_ok=()
 for rc in "${CENTERS[@]}"; do
-  stagr=${DRIVER[$rc]}
   pg_series=$(s4 "WITH cutoff AS (SELECT max(fiscyearper) AS p FROM sap.acdoca WHERE rcntr = '$rc'),
                        o AS (SELECT fiscyearper AS p, sum(ksl) AS opex FROM sap.acdoca WHERE rcntr = '$rc' GROUP BY 1
                              UNION ALL
                              SELECT a.fiscyearper, sum(a.ksl) FROM sap.acdocp a, cutoff c
                               WHERE a.rcntr = '$rc' AND a.category = '$CATEGORY' AND a.fiscyearper > c.p GROUP BY 1),
-                       q AS (SELECT to_char(date_from, 'YYYY\"0\"MM') AS p, sum(msl) AS qty, max(runit) AS runit FROM sap.finsskf
-                              WHERE rcntr = '$rc' AND stagr = '$stagr' AND (rrcty = '0' OR category = '$CATEGORY') GROUP BY 1)
-                  SELECT string_agg(o.p || '=' || round(o.opex / q.qty, CASE q.runit WHEN 'H' THEN 2 ELSE 4 END), ' ' ORDER BY o.p)
+                       q AS (SELECT to_char(date_from, 'YYYY\"0\"MM') AS p, sum(msl) AS qty FROM sap.finsskf
+                              WHERE rcntr = '$rc' AND (rrcty = '0' OR category = '$CATEGORY') GROUP BY 1)
+                  SELECT string_agg(o.p || '=' || coalesce(round(o.opex / nullif(q.qty, 0), 6)::text, 'n/d'), ' ' ORDER BY o.p)
                     FROM o JOIN q USING (p)")
-  pg_deviation=$(s4 "WITH a AS (SELECT sum(ksl) AS o FROM sap.acdoca WHERE rcntr = '$rc' AND fiscyearper = '2026010'),
-                          b AS (SELECT sum(ksl) AS o FROM sap.acdocp WHERE rcntr = '$rc' AND category = '$BUDGET' AND fiscyearper = '2026010'),
-                          qa AS (SELECT msl, CASE runit WHEN 'H' THEN 2 ELSE 4 END AS d FROM sap.finsskf
-                                  WHERE rcntr = '$rc' AND stagr = '$stagr' AND rrcty = '0' AND date_from = '2026-10-01'),
-                          qb AS (SELECT msl FROM sap.finsskf
-                                  WHERE rcntr = '$rc' AND stagr = '$stagr' AND category = '$BUDGET' AND date_from = '2026-10-01'),
-                          u AS (SELECT round(a.o / qa.msl, qa.d) AS ua, round(b.o / qb.msl, qa.d) AS ub FROM a, b, qa, qb)
-                     SELECT round((a.o - b.o) / b.o * 100, 1) || '|' || round((qa.msl - qb.msl) / qb.msl * 100, 1) || '|' ||
-                            u.ua || '|' || u.ub || '|' || round((u.ua - u.ub) / u.ub * 100, 1)
-                       FROM a, b, qa, qb, u")
-  timeline=$(api "opex/timeline?rcntr=$rc")
-  trino_series=$(json "(lambda d: ' '.join(m['period'].replace('-', '0') + '=' + format(m['drivers']['$stagr']['unit_cost'], '.%df' % d)
-                       for m in data['periods']))(next(x['decimals'] for x in data['drivers'] if x['stagr'] == '$stagr'))" <<<"$timeline")
-  trino_deviation=$(json "(lambda s, u, q: '%.1f|%.1f|%.*f|%.*f|%.1f' % (s['opex']['delta_budget_pct'], q['delta_budget_pct'],
-                          u['decimals'], u['current'], u['decimals'], u['budget'], u['delta_budget_pct']))(data['summary'],
-                          next(x for x in data['summary']['unit_costs'] if x['stagr'] == '$stagr'),
-                          next(x for x in data['summary']['drivers'] if x['stagr'] == '$stagr'))" <<<"$timeline")
-  months=$(json "'%d+%d' % (sum(m['kind'] == 'actual' for m in data['periods']), sum(m['kind'] == 'plan' for m in data['periods']))" <<<"$timeline")
-  IFS='|' read -r opex_pct driver_pct unit_actual unit_budget unit_pct <<<"$trino_deviation"
-  [[ -n $pg_series && $pg_series == "$trino_series" && $months == 3+18 && -n $pg_deviation && $pg_deviation == "$trino_deviation" ]] \
-    && ok "$rc: $months meses de OPEX unitario por $stagr idénticos en Trino y PostgreSQL · 2026-10 vs $BUDGET: OPEX $opex_pct %," \
-          "$stagr $driver_pct %, unitario $unit_actual vs $unit_budget ($unit_pct %)" \
-    || ko "$rc: Trino='${trino_series:0:90}' / '$trino_deviation' PostgreSQL='${pg_series:0:90}' / '$pg_deviation' meses='$months'"
+  trino_series=$(api "opex/timeline?rcntr=$rc" | json "' '.join(m['period'].replace('-', '0') + '=' +
+                   ('n/d' if m['unit_cost'] is None else format(m['unit_cost'], '.6f')) for m in data['periods'])")
+  [[ -n $pg_series && $pg_series == "$trino_series" ]] || { ko "$rc OPEX unitario Trino='${trino_series:0:90}' PostgreSQL='${pg_series:0:90}'"; continue; }
+  series_ok+=("$rc")
 done
-summary=$(api "opex/timeline?rcntr=$RCNTR" | json "(lambda s, u, h: '|'.join(map(str, [s['period'], u['current'], u['delta_budget_pct'],
-                 s['opex']['delta_budget_pct'], h['delta_budget_pct'], u['delta_previous_pct'], s['opex']['delta_previous_pct'],
-                 h['delta_previous_pct'], s['forecast']['stable_from']])))(data['summary'], data['summary']['unit_costs'][0],
-                 data['summary']['drivers'][0])")
-[[ $summary == "2026-10|550.65|33.1|15.3|-13.4|29.1|12.2|-13.1|2027-03" ]] \
-  && ok "$RCNTR 2026-10 (Trino): vs $BUDGET OPEX +15,3 %, horas -13,4 %, 550,65 USD/h (+33,1 %); vs mes anterior +12,2 % /" \
-        "-13,1 % / +29,1 %; plan estable desde 2027-03" \
-  || ko "resumen de desviación $RCNTR: '$summary'"
+[[ ${#series_ok[@]} -eq ${#CENTERS[@]} ]] \
+  && ok "OPEX unitario de 24 meses (6 reales + 18 $CATEGORY) idéntico en Trino y PostgreSQL para los ${#series_ok[@]} centros (puerto 2026-10: n/d, impulsor 0)"
+summary=$(api "opex/timeline?rcntr=RCNTR_MIN_PERF" | json "(lambda s: '|'.join(map(str, [s['period'], round(s['unit_cost']['actual'], 2),
+                 round(s['unit_cost']['budget'], 2), s['unit_cost']['delta_pct'], s['opex']['variance_pct'], s['driver']['delta_pct'],
+                 s['origins'][0]['racct'], s['origins'][0]['effect'], round(s['origins'][0]['amount'])])))(data['summary'])")
+[[ $summary == "$PERIOD|18.32|15.64|17.1|15.0|-1.8|RACCT_ACEROS|efficiency|359578" ]] \
+  && ok "RCNTR_MIN_PERF $PERIOD (Trino): OPEX +15,0 % vs $BUDGET, metros -1,8 %, 18,32 vs 15,64 USD/m (+17,1 %); origen RACCT_ACEROS · eficiencia (Q) +USD 359.578" \
+  || ko "resumen RCNTR_MIN_PERF: '$summary'"
 
 step "7 · Raw layer (MinIO raw-docs + Unity Catalog) y linaje"
 local_files=$(find knowledge/raw-docs -type f | wc -l)
@@ -286,9 +373,12 @@ done < <(find knowledge/raw-docs -type f)
 [[ $tagged -eq $local_files ]] && ok "metadatos SAP en los $tagged objetos raw (Rcntr, Gjahr, Monat del front matter)" \
   || ko "objetos raw con metadatos SAP: $tagged de $local_files"
 volumes=$(curl -fsS "http://127.0.0.1:${UNITY_CATALOG_PORT:-8081}/api/2.1/unity-catalog/volumes?catalog_name=nodara&schema_name=raw" 2>/dev/null)
-[[ $volumes == *'"full_name":"nodara.raw.docs_mantenimiento"'* && $volumes == *'"full_name":"nodara.raw.docs_operaciones"'* ]] \
-  && ok "Unity Catalog volumes nodara.raw.docs_mantenimiento y docs_operaciones → s3://raw-docs/<origen>" \
-  || ko "volúmenes raw no registrados en Unity Catalog"
+missing=""
+for source in $(find knowledge/raw-docs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort); do
+  [[ $volumes == *"\"full_name\":\"nodara.raw.docs_$source\""* ]] || missing+=" $source"
+done
+[[ -z $missing ]] && ok "Unity Catalog: un volumen EXTERNAL por origen (nodara.raw.docs_$(find knowledge/raw-docs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd '|'))" \
+  || ko "volúmenes raw sin registrar:$missing"
 orphans=0 ungrounded=0
 while IFS='|' read -r doc uri; do
   raw=$(s3 "${uri#s3://}" 2>/dev/null) || { orphans=$((orphans + 1)); continue; }
@@ -303,39 +393,44 @@ done < <(kb "SELECT doc_id, source_uri FROM kb.documents")
 step "8 · Base de conocimiento (pgvector aislado, metadatos Año / Mes / RCNTR obligatorios)"
 chunks=$(kb "SELECT count(*) FROM kb.chunks")
 coords=$(kb "SELECT count(DISTINCT (gjahr, monat, rcntr)) FROM kb.chunks")
-[[ ${chunks:-0} -gt 0 && $coords == "${#CENTERS[@]}" ]] \
-  && ok "pgvector $(kb "SELECT extversion FROM pg_extension WHERE extname = 'vector'"): $(kb 'SELECT count(*) FROM kb.documents') bitácoras, $chunks fragmento(s), $(kb 'SELECT count(embedding) FROM kb.chunks') indexado(s) · $coords coordenadas Año/Mes/RCNTR" \
+[[ ${chunks:-0} -gt 0 && $coords == "${#LOG[@]}" ]] \
+  && ok "pgvector $(kb "SELECT extversion FROM pg_extension WHERE extname = 'vector'"): $(kb 'SELECT count(*) FROM kb.documents') bitácoras de justificación, $chunks fragmentos, $(kb 'SELECT count(embedding) FROM kb.chunks') indexados · $coords coordenadas Año/Mes/RCNTR" \
   || ko "kb.chunks: $chunks fragmentos, $coords coordenadas Año/Mes/RCNTR"
 routed=""
-for rc in "${CENTERS[@]}"; do
+for rc in "${!LOG[@]}"; do
   [[ $(kb "SELECT string_agg(DISTINCT doc_id, ',') FROM kb.chunks WHERE rcntr = '$rc' AND gjahr = 2026 AND monat = 10") == "${LOG[$rc]}" ]] \
     || routed+=" $rc"
 done
-[[ -z $routed ]] && ok "filtro Año 2026 · Mes 10 · RCNTR → exactamente la bitácora de cada centro de costo (${LOG[*]})" \
+[[ -z $routed && -z $(kb "SELECT doc_id FROM kb.chunks WHERE rcntr = 'RCNTR_MIN_TRAN' LIMIT 1") ]] \
+  && ok "filtro Año 2026 · Mes 10 · RCNTR → exactamente la bitácora de cada anomalía (${LOG[*]}); un centro sin anomalía no recibe textos" \
   || ko "filtro por metadatos sin su bitácora:$routed"
 if $DC exec -T vector-db psql -U "$VECTOR_DB_USER" -d knowledge -v ON_ERROR_STOP=1 -c \
-     "BEGIN; INSERT INTO kb.chunks (doc_id, chunk_no, section, content) VALUES ('BIT-MANT-CAEX-2026-10', 99, 'x', 'x'); ROLLBACK;" \
+     "BEGIN; INSERT INTO kb.chunks (doc_id, chunk_no, section, content) VALUES ('BIT-PERF-2026-10', 99, 'x', 'x'); ROLLBACK;" \
      </dev/null >/dev/null 2>&1; then
   ko "pgvector aceptó un vector sin Año/Mes/RCNTR"
 else
   ok "pgvector rechaza un vector sin Año/Mes/RCNTR (NOT NULL + CHECK)"
 fi
-[[ $(kb "SELECT count(*) FROM kb.chunks WHERE rcntr = '$RCNTR' AND gjahr = 2026 AND monat = 9") == 0 ]] \
-  && ok "filtro por metadatos: ninguna bitácora de $RCNTR en 2026-09 (la IA no recibe textos de otro mes)" || ko "filtro por metadatos inconsistente"
+[[ $(kb "SELECT count(*) FROM kb.chunks WHERE rcntr = 'RCNTR_MIN_PERF' AND gjahr = 2026 AND monat = 9") == 0 ]] \
+  && ok "filtro por metadatos: ninguna bitácora de RCNTR_MIN_PERF en 2026-09 (la IA no recibe textos de otro mes)" || ko "filtro por metadatos inconsistente"
 docker network inspect rollingf-kb -f '{{range .Containers}}{{.Name}} {{end}}' | grep -qv 'trino\|kafka\|debezium' \
   && ok "segmento rollingf-kb exclusivo: $(docker network inspect rollingf-kb -f '{{range .Containers}}{{.Name}} {{end}}')" || ko "rollingf-kb compartido con servicios ajenos"
 
-step "9 · Gerente de Finanzas → frontend → backend → IA (motor NIM / Ollama, ruteo de idioma, Langfuse)"
+step "9 · Gerente de Finanzas → frontend → backend → IA (cuenta y efecto de origen, motor NIM / Ollama, Langfuse)"
 home=$(curl -fsS "http://127.0.0.1:${FRONTEND_PORT:-3000}/" 2>/dev/null)
 [[ -n $home ]] && ok "frontend HTTP 200 en 127.0.0.1:${FRONTEND_PORT:-3000}" || ko "frontend sin respuesta"
 [[ $home == *'aria-label="Español"'* && $home == *'aria-label="English"'* && $home == *'aria-label="Português"'* &&
-   $home == *'NVIDIA NIM (Cloud)'* && $home == *'Ollama (Local)'* && $home == *'data-testid="cost-center-select"'* ]] \
-  && ok "selectores de idioma (ES/EN/PT), motor (NIM / Ollama) y centro de costo desplegados (comportamiento: make ui-test)" \
-  || ko "falta un selector (idioma, motor o centro de costo) en el frontend"
-centers=$(api "opex/cost-centers" | json "' '.join(c['rcntr'] + ':' + ','.join(c['categories']) + ('+$BUDGET' if c['budget'] else '')
-                                             for c in data['cost_centers'])")
-[[ $centers == "$(printf "%s:$CATEGORY+$BUDGET " "${CENTERS[@]}" | xargs)" ]] \
-  && ok "selector de centro de costo desde el lakehouse, en orden de la cadena de valor: $centers" || ko "centros de costo: '$centers'"
+   $home == *'NVIDIA NIM (Cloud)'* && $home == *'Ollama (Local)'* && $home == *'data-testid="cost-center-select"'* &&
+   $home == *'data-testid="matrix"'* ]] \
+  && ok "selectores de idioma (ES/EN/PT), motor (NIM / Ollama), centro de costo y matriz P x Q desplegados (comportamiento: make ui-test)" \
+  || ko "falta un selector o la matriz P x Q en el frontend"
+centers=$(api "opex/cost-centers" | json "' '.join(c['rcntr'] + ':' + c['area'] for c in data['cost_centers'])")
+[[ $centers == "RCNTR_MIN_PERF:MINA RCNTR_MIN_TRON:MINA RCNTR_MIN_CARG:MINA RCNTR_MIN_TRAN:MINA RCNTR_CON_MOLI:CONCENTRADORA RCNTR_CON_FLOT:CONCENTRADORA RCNTR_CON_RELA:CONCENTRADORA RCNTR_LIX_RIEG:LIXIVIACION RCNTR_LIX_SX:LIXIVIACION RCNTR_LIX_EW:LIXIVIACION RCNTR_PTO_FILT:PUERTO RCNTR_PTO_EMBA:PUERTO" ]] \
+  && ok "selector desde el lakehouse: 12 centros en orden de la cadena de valor y agrupados por área" || ko "centros de costo: '$centers'"
+matrix=$(api "opex/matrix" | json "' '.join('%s=%s' % (c['rcntr'], (c['origin'] or {}).get('racct', '-') + ':' + (c['origin'] or {}).get('effect', '-'))
+                                        for a in data['areas'] for c in a['cost_centers'] if c['rcntr'] in ('RCNTR_MIN_PERF', 'RCNTR_CON_FLOT', 'RCNTR_CON_MOLI', 'RCNTR_PTO_EMBA'))")
+[[ $matrix == "RCNTR_MIN_PERF=RACCT_ACEROS:efficiency RCNTR_CON_MOLI=RACCT_LABOR:efficiency RCNTR_CON_FLOT=RACCT_REACTIVOS:price RCNTR_PTO_EMBA=-:-" ]] \
+  && ok "API /opex/matrix: origen de cada anomalía calculado por Trino ($matrix)" || ko "matriz: '$matrix'"
 status_json=$(api status 2>/dev/null)
 [[ $status_json == *'"s4hana_live":{"ok":true'* ]] && ok "backend vía proxy /api/status (S/4 en vivo OK)" || ko "backend /api/status: ${status_json:0:200}"
 [[ $status_json == *'"observability":{"ok":true'* ]] && ok "Langfuse v2 autenticado con las API keys de .env" || ko "Langfuse sin autenticar"
@@ -352,20 +447,22 @@ if [[ ${SMOKE_RAG:-1} == 0 ]]; then
   skip "IA E2E omitida (SMOKE_RAG=0)"
 elif [[ $status_json == *'"embed_ready":true'* ]] && (( nim || ollama )); then
   engine=$( (( nim )) && echo nim || echo ollama )
-  rag_check $engine ES "Explica la desviación de OPEX del mes actual" $RCNTR 550.65 inyector
-  rag_check $engine EN "Explain the OPEX deviation of the current month" $RCNTR 550.65
-  rag_check $engine PT "Explique o desvio de OPEX do mês atual" $RCNTR 550.65
-  # Port: fixed costs on budget, the unit OPEX rises because the shipped tonnes fall (swells).
-  rag_check $engine ES "¿Por qué subió el OPEX unitario del puerto este mes?" $PORT 5.0094 marejad
+  ask_es="¿Qué cuenta (RACCT) originó la desviación del mes y fue efecto precio o eficiencia?"
+  rag_check $engine ES "$ask_es" RCNTR_MIN_PERF RACCT_ACEROS "Eficiencia (Q)" first
+  rag_check $engine ES "$ask_es" RCNTR_CON_FLOT RACCT_REACTIVOS "Precio (P)" first
+  rag_check $engine EN "Which account (RACCT) caused the deviation of the month, and was it a price or an efficiency effect?" \
+    RCNTR_CON_MOLI RACCT_LABOR "Efficiency (Q)" first
+  rag_check $engine PT "Qual conta (RACCT) originou o desvio do mês e foi efeito preço ou eficiência?" \
+    RCNTR_PTO_EMBA TONEMB "Volume" first
   if (( nim && ollama )); then  # local contingency engine (no data leaves the enclave)
-    rag_check ollama ES "Explica la desviación de OPEX del mes actual" $RCNTR 550.65
+    rag_check ollama ES "$ask_es" RCNTR_MIN_PERF RACCT_ACEROS "Eficiencia" any
   fi
 else
   skip "IA E2E omitida: modelos aún no importados (make models && make embed)"
 fi
 
-step "10 · Tiempo real E2E: S/4 → Debezium → Kafka → Delta (bronze → silver) → Trino → API"
-before=$(api "opex/timeline?rcntr=$RCNTR" | json "data['summary']['opex']['current']")
+step "10 · Tiempo real E2E: S/4 → Debezium → Kafka → Delta (bronze → silver → gold) → Trino → API"
+before=$(api "opex/timeline?rcntr=RCNTR_MIN_TRAN" | json "data['summary']['opex']['actual']")
 belnr=$(s4 "SELECT belnr FROM sap.simulate_activity(1) LIMIT 1")
 if [[ -z $belnr ]]; then
   ko "simulador S/4 no contabilizó documento"
@@ -377,10 +474,10 @@ else
     [[ ${found:-0} -ge 2 ]] && break
     sleep 2
   done
-  after=$(api "opex/timeline?rcntr=$RCNTR" | json "data['summary']['opex']['current']")
+  after=$(api "opex/timeline?rcntr=RCNTR_MIN_TRAN" | json "data['summary']['opex']['actual']")
   if [[ ${found:-0} -ge 2 && -n $after && $after != "$before" ]]; then
     lag=$(sql "SELECT max(date_diff('millisecond', _source_ts, _ingested_at)) FROM lakehouse.bronze.acdoca WHERE belnr = '$belnr'")
-    ok "documento $belnr (consumo de repuestos CAEX) en silver en $(( $(date +%s) - start ))s (latencia CDC ${lag} ms); OPEX del mes vía Trino: $before → $after"
+    ok "documento $belnr (despacho de diésel CAEX, L x USD/L) en silver en $(( $(date +%s) - start ))s (latencia CDC ${lag} ms); OPEX de RCNTR_MIN_TRAN vía gold: $before → $after"
   else
     ko "documento $belnr: $found líneas en silver; OPEX del mes '$before' → '$after'"
   fi

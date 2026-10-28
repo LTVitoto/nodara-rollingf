@@ -1,44 +1,90 @@
 """SAP master data outside the simulated table scope — texts of SKAT (G/L accounts), TKA03 (statistical
 key figures), T006A (units), CSKT (cost centers) and the plan categories of ACDOCP in the three supported
-languages — plus the unit-cost driver of each cost center: the statistical key figure its unit OPEX is
-reported against."""
+languages — plus the structure of the OPEX C1 value chain: the area of each cost center and the
+statistical key figure its specific consumption and unit OPEX are reported against."""
 from __future__ import annotations
 
 ACCOUNTS = {
-    "0061100100": {"es": "Repuestos y componentes", "en": "Spare parts and components", "pt": "Peças e componentes"},
-    "0061100200": {"es": "Combustible diésel", "en": "Diesel fuel", "pt": "Combustível diesel"},
-    "0061100300": {"es": "Neumáticos", "en": "Tyres", "pt": "Pneus"},
-    "0061100400": {"es": "Reactivos de proceso", "en": "Process reagents", "pt": "Reagentes de processo"},
-    "0062100100": {"es": "Servicios de mantención", "en": "Maintenance services", "pt": "Serviços de manutenção"},
-    "0062100200": {"es": "Almacenamiento", "en": "Storage", "pt": "Armazenagem"},
-    "0062100300": {"es": "Energía eléctrica", "en": "Electric power", "pt": "Energia elétrica"},
-    "0063100100": {"es": "Remuneraciones", "en": "Payroll", "pt": "Folha de pagamento"},
+    "RACCT_ACEROS": {"es": "Aceros de perforación (brocas)", "en": "Drilling steels (bits)",
+                     "pt": "Aços de perfuração (brocas)"},
+    "RACCT_DIESEL": {"es": "Diésel", "en": "Diesel fuel", "pt": "Diesel"},
+    "RACCT_LABOR": {"es": "Mano de obra (horas hombre)", "en": "Labor (man-hours)", "pt": "Mão de obra (homem-hora)"},
+    "RACCT_MANTEN": {"es": "Mantención contratada", "en": "Contracted maintenance", "pt": "Manutenção contratada"},
+    "RACCT_DEPREC": {"es": "Depreciación", "en": "Depreciation", "pt": "Depreciação"},
+    "RACCT_EXPLOSIV": {"es": "Explosivos", "en": "Explosives", "pt": "Explosivos"},
+    "RACCT_ACCESOR": {"es": "Accesorios de voladura", "en": "Blasting accessories", "pt": "Acessórios de detonação"},
+    "RACCT_SERVIC": {"es": "Servicio de tronadura", "en": "Blasting service", "pt": "Serviço de detonação"},
+    "RACCT_ENERGIA": {"es": "Energía eléctrica", "en": "Electric power", "pt": "Energia elétrica"},
+    "RACCT_REPUEST": {"es": "Repuestos", "en": "Spare parts", "pt": "Peças de reposição"},
+    "RACCT_NEUMAT": {"es": "Neumáticos", "en": "Tyres", "pt": "Pneus"},
+    "RACCT_BOLAS": {"es": "Bolas de molienda", "en": "Grinding balls", "pt": "Bolas de moagem"},
+    "RACCT_REVEST": {"es": "Revestimientos de molinos", "en": "Mill liners", "pt": "Revestimentos de moinhos"},
+    "RACCT_REACTIVOS": {"es": "Reactivos (colector xantato)", "en": "Reagents (xanthate collector)",
+                        "pt": "Reagentes (coletor xantato)"},
+    "RACCT_CAL": {"es": "Cal", "en": "Lime", "pt": "Cal"},
+    "RACCT_FLOCUL": {"es": "Floculante", "en": "Flocculant", "pt": "Floculante"},
+    "RACCT_AGUA": {"es": "Agua industrial", "en": "Industrial water", "pt": "Água industrial"},
+    "RACCT_ACIDO": {"es": "Ácido sulfúrico", "en": "Sulfuric acid", "pt": "Ácido sulfúrico"},
+    "RACCT_EXTRACT": {"es": "Extractante orgánico", "en": "Organic extractant", "pt": "Extratante orgânico"},
+    "RACCT_DILUY": {"es": "Diluyente", "en": "Diluent", "pt": "Diluente"},
+    "RACCT_ADITIVOS": {"es": "Aditivos de electrolito", "en": "Electrolyte additives", "pt": "Aditivos de eletrólito"},
+    "RACCT_ANODOS": {"es": "Ánodos de plomo", "en": "Lead anodes", "pt": "Ânodos de chumbo"},
+    "RACCT_TELAS": {"es": "Telas filtrantes", "en": "Filter cloths", "pt": "Telas filtrantes"},
+    "RACCT_ALMAC": {"es": "Almacenamiento de concentrado", "en": "Concentrate storage",
+                    "pt": "Armazenagem de concentrado"},
 }
 STATISTICAL_KEY_FIGURES = {
-    "HOROP": {"es": "Horas operativas", "en": "Operating hours", "pt": "Horas operacionais"},
-    "TONMOV": {"es": "Toneladas movidas", "en": "Tonnes moved", "pt": "Toneladas movimentadas"},
-    "TONAPI": {"es": "Toneladas apiladas", "en": "Tonnes stacked", "pt": "Toneladas empilhadas"},
-    "TONPRO": {"es": "Toneladas procesadas", "en": "Tonnes processed", "pt": "Toneladas processadas"},
+    "METPER": {"es": "Metros perforados", "en": "Meters drilled", "pt": "Metros perfurados"},
+    "TONTRO": {"es": "Toneladas tronadas", "en": "Tonnes blasted", "pt": "Toneladas detonadas"},
+    "TONCAR": {"es": "Toneladas cargadas", "en": "Tonnes loaded", "pt": "Toneladas carregadas"},
+    "TONMOV": {"es": "Toneladas transportadas", "en": "Tonnes hauled", "pt": "Toneladas transportadas"},
+    "TONMOL": {"es": "Toneladas molidas", "en": "Tonnes milled", "pt": "Toneladas moídas"},
+    "TONFLO": {"es": "Toneladas flotadas", "en": "Tonnes floated", "pt": "Toneladas flotadas"},
+    "TONREL": {"es": "Toneladas de relave", "en": "Tailings tonnes", "pt": "Toneladas de rejeito"},
+    "TONAPI": {"es": "Toneladas bajo riego", "en": "Tonnes under irrigation", "pt": "Toneladas sob irrigação"},
+    "M3PLS": {"es": "m³ de PLS tratados", "en": "PLS treated (m³)", "pt": "m³ de PLS tratados"},
+    "TONCAT": {"es": "Toneladas de cátodo", "en": "Cathode tonnes", "pt": "Toneladas de catodo"},
+    "TONFIL": {"es": "Toneladas filtradas", "en": "Tonnes filtered", "pt": "Toneladas filtradas"},
     "TONEMB": {"es": "Toneladas embarcadas", "en": "Tonnes shipped", "pt": "Toneladas embarcadas"},
 }
-UNITS = {"H": "h", "TO": "t", "WMT": "WMT"}  # internal unit of measure → external symbol
-# Value-chain order of the C1 OPEX: the order of the cost center selector.
+# Internal unit of measure → external symbol (language neutral).
+UNITS = {"M": "m", "TO": "t", "M3": "m³", "WMT": "WMT", "PC": "PC", "L": "L", "KG": "kg", "HR": "h", "KWH": "kWh"}
+AREAS = {
+    "MINA": {"es": "Mina", "en": "Mine", "pt": "Mina"},
+    "CONCENTRADORA": {"es": "Concentradora", "en": "Concentrator", "pt": "Concentrador"},
+    "LIXIVIACION": {"es": "Lixiviación", "en": "Leaching", "pt": "Lixiviação"},
+    "PUERTO": {"es": "Puerto", "en": "Port", "pt": "Porto"},
+}
+# Value-chain order of the OPEX C1: the order of the selector and of the matrix.
 COST_CENTERS = {
-    "RCNTR_MINA_CAEX": {"es": "Mina · Flota CAEX", "en": "Mine · CAEX haul fleet", "pt": "Mina · Frota CAEX"},
-    "RCNTR_MINA_TRUCK": {"es": "Mina · Extracción", "en": "Mine · Extraction", "pt": "Mina · Extração"},
-    "RCNTR_LIXIV_SXEW": {"es": "Planta de Lixiviación SX-EW", "en": "SX-EW leaching plant",
-                         "pt": "Planta de lixiviação SX-EW"},
-    "RCNTR_CONCEN_FLOT": {"es": "Planta Concentradora · Flotación", "en": "Concentrator · Flotation",
-                          "pt": "Concentrador · Flotação"},
-    "RCNTR_PUERTO_EMB": {"es": "Puerto · Embarque", "en": "Port · Shipping", "pt": "Porto · Embarque"},
+    "RCNTR_MIN_PERF": {"es": "Perforación", "en": "Drilling", "pt": "Perfuração"},
+    "RCNTR_MIN_TRON": {"es": "Tronadura", "en": "Blasting", "pt": "Detonação"},
+    "RCNTR_MIN_CARG": {"es": "Carguío", "en": "Loading", "pt": "Carregamento"},
+    "RCNTR_MIN_TRAN": {"es": "Transporte", "en": "Hauling", "pt": "Transporte"},
+    "RCNTR_CON_MOLI": {"es": "Molienda", "en": "Grinding", "pt": "Moagem"},
+    "RCNTR_CON_FLOT": {"es": "Flotación", "en": "Flotation", "pt": "Flotação"},
+    "RCNTR_CON_RELA": {"es": "Relaves", "en": "Tailings", "pt": "Rejeitos"},
+    "RCNTR_LIX_RIEG": {"es": "Riego de pilas", "en": "Heap irrigation", "pt": "Irrigação de pilhas"},
+    "RCNTR_LIX_SX": {"es": "Extracción por solventes", "en": "Solvent extraction", "pt": "Extração por solventes"},
+    "RCNTR_LIX_EW": {"es": "Electro-obtención", "en": "Electrowinning", "pt": "Eletro-obtenção"},
+    "RCNTR_PTO_FILT": {"es": "Filtrado de concentrado", "en": "Concentrate filtering",
+                       "pt": "Filtragem de concentrado"},
+    "RCNTR_PTO_EMBA": {"es": "Embarque", "en": "Shipping", "pt": "Embarque"},
+}
+COST_CENTER_AREAS = {
+    "RCNTR_MIN_PERF": "MINA", "RCNTR_MIN_TRON": "MINA", "RCNTR_MIN_CARG": "MINA", "RCNTR_MIN_TRAN": "MINA",
+    "RCNTR_CON_MOLI": "CONCENTRADORA", "RCNTR_CON_FLOT": "CONCENTRADORA", "RCNTR_CON_RELA": "CONCENTRADORA",
+    "RCNTR_LIX_RIEG": "LIXIVIACION", "RCNTR_LIX_SX": "LIXIVIACION", "RCNTR_LIX_EW": "LIXIVIACION",
+    "RCNTR_PTO_FILT": "PUERTO", "RCNTR_PTO_EMBA": "PUERTO",
 }
 UNIT_DRIVERS = {
-    "RCNTR_MINA_CAEX": "HOROP",
-    "RCNTR_MINA_TRUCK": "TONMOV",
-    "RCNTR_LIXIV_SXEW": "TONAPI",
-    "RCNTR_CONCEN_FLOT": "TONPRO",
-    "RCNTR_PUERTO_EMB": "TONEMB",
+    "RCNTR_MIN_PERF": "METPER", "RCNTR_MIN_TRON": "TONTRO", "RCNTR_MIN_CARG": "TONCAR", "RCNTR_MIN_TRAN": "TONMOV",
+    "RCNTR_CON_MOLI": "TONMOL", "RCNTR_CON_FLOT": "TONFLO", "RCNTR_CON_RELA": "TONREL",
+    "RCNTR_LIX_RIEG": "TONAPI", "RCNTR_LIX_SX": "M3PLS", "RCNTR_LIX_EW": "TONCAT",
+    "RCNTR_PTO_FILT": "TONFIL", "RCNTR_PTO_EMBA": "TONEMB",
 }
+# Display decimals of the unit OPEX (USD per driver unit): 2 for meters and cathode tonnes, 4 otherwise.
+UNIT_COST_DECIMALS = {"METPER": 2, "TONCAT": 2}
 PLAN_CATEGORIES = {
     "BUDG": {"es": "Presupuesto base (SAC)", "en": "Base budget (SAC)", "pt": "Orçamento base (SAC)"},
     "RF18M": {"es": "Rolling Forecast 18 meses (SAC)", "en": "18-month rolling forecast (SAC)",
@@ -54,3 +100,8 @@ def texts(table: dict[str, dict[str, str]], key: str) -> dict[str, str]:
 def order(rcntr: str) -> int:
     """Position of a cost center in the value chain (unknown ones go last)."""
     return list(COST_CENTERS).index(rcntr) if rcntr in COST_CENTERS else len(COST_CENTERS)
+
+
+def symbol(unit: str | None) -> str:
+    """External symbol of an internal unit; lines without quantity are amounts in USD."""
+    return UNITS.get(unit or "", unit) if unit else "USD"

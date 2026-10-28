@@ -1,4 +1,4 @@
-# CLAUDE.md — Nodara Rolling Forecast (OPEX 18 meses)
+# CLAUDE.md — Nodara GenAI Financial Twin (Rolling Forecast OPEX C1, 18 meses)
 
 ## Regla obligatoria de respuesta
 
@@ -9,30 +9,34 @@ La deuda del punto 4 se consolida en [TECH_DEBT.md](TECH_DEBT.md) (ID, impacto, 
 ## Roles y scope
 
 - **Arquitecto de Datos Financieros e IA** (usuario): define el alcance y aprueba los cambios. **Programador Senior** (Claude): implementa y valida.
-- **Objetivo**: Rolling Forecast de OPEX a 18 meses para la cadena de valor de la Gran Minería (mina, plantas y
-  puerto). Trino calcula de forma determinista el OPEX (KSL), los impulsores físicos, el OPEX unitario y la desviación
-  real − presupuesto (`BUDG`) sobre el lakehouse. El LLM (NVIDIA NIM en la nube u Ollama local,
-  a elección del operador) **no calcula**: explica las desviaciones cruzando esas cifras con las bitácoras de pgvector
-  filtradas por Año, Mes y RCNTR. Responde en ES/EN/PT dentro de una simulación **air-gapped** cuya única salida es
+- **Objetivo** (producción, "GenAI Financial Twin"): Rolling Forecast de OPEX C1 a 18 meses para la cadena de valor
+  de la Gran Minería (mina, concentradora, lixiviación y puerto) con detalle **precio × cantidad (P × Q) por cuenta de
+  mayor (RACCT)**. Trino calcula de forma determinista sobre el lakehouse:
+  - el costo (KSL), la cantidad (MSL/RUOM) y el precio de cada línea centro × cuenta;
+  - el consumo específico contra el impulsor FINSSKF;
+  - la desviación real − presupuesto (`BUDG`) descompuesta en efectos precio (P), eficiencia (Q), volumen y gasto;
+  - el OPEX unitario y el plan.
+
+  El LLM (NVIDIA NIM en la nube u Ollama local, a elección del operador) **no calcula**: nombra la cuenta y el
+  efecto que originan la desviación (ranking de Trino) y lo explica con las bitácoras de pgvector filtradas por Año,
+  Mes y RCNTR. Responde en ES/EN/PT dentro de una simulación **air-gapped** cuya única salida es
   un gateway con allowlist (solo NVIDIA).
 - **Stack cerrado** (no agregar tecnologías sin aprobación del Arquitecto):
   PostgreSQL relacional (S/4HANA) · Debezium + Kafka · MinIO + Delta Lake + Unity Catalog OSS + Trino ·
   PostgreSQL + pgvector aislado (solo bitácoras) · FastAPI + LangChain + Ollama · Next.js + TailwindCSS (gráfico SVG
   propio, sin librerías) · NVIDIA NIM (cloud) · Langfuse v2 autoalojado · gateway de egress (squid).
-- **Seed ESTRICTO: cadena de valor del OPEX C1, 5 casos aprobados** (sociedad/área de control `CL01`, moneda de grupo
-  USD) y nada más:
-  - `RCNTR_MINA_CAEX`: repuestos por los inyectores Komatsu; caída de horas operativas (`HOROP`).
-  - `RCNTR_MINA_TRUCK`: combustible por las motobombas de achique; toneladas movidas (`TONMOV`) −15 %.
-  - `RCNTR_LIXIV_SXEW`: repuestos por la falla de la bomba de ácido; caída de toneladas apiladas (`TONAPI`).
-  - `RCNTR_CONCEN_FLOT`: reactivos por el xantato a 15 g/t; toneladas procesadas (`TONPRO`) en presupuesto.
-  - `RCNTR_PUERTO_EMB`: costos fijos estables; caída de toneladas embarcadas (`TONEMB`, WMT) por marejadas.
-
-  Por centro de costo:
-  - ACDOCA: 3 meses reales (2026-08 → 2026-10).
-  - ACDOCP: `CATEGORY = BUDG` (presupuesto base) para esos 3 meses y `RF18M` para 18 meses (2026-11 → 2028-04) que
-    convergen al presupuesto.
-  - FINSSKF: impulsores reales y de plan (`BUDG`, `RF18M`).
-  - Una bitácora de 2026-10 con el texto aprobado por el Arquitecto.
+- **Seed de producción, ESTRICTO** (sociedad/área de control `CL01`, moneda de grupo USD) y nada más:
+  - **12 centros de costo**: `RCNTR_MIN_PERF`, `RCNTR_MIN_TRON`, `RCNTR_MIN_CARG`, `RCNTR_MIN_TRAN` (mina);
+    `RCNTR_CON_MOLI`, `RCNTR_CON_FLOT`, `RCNTR_CON_RELA` (concentradora); `RCNTR_LIX_RIEG`, `RCNTR_LIX_SX`,
+    `RCNTR_LIX_EW` (lixiviación); `RCNTR_PTO_FILT`, `RCNTR_PTO_EMBA` (puerto). Cada uno con 4–5 cuentas `RACCT_*` y
+    un impulsor FINSSKF.
+  - **Datos por centro**: ACDOCA con 6 meses reales (2026-05 → 2026-10), ACDOCP `BUDG` para esos 6 meses y `RF18M`
+    para 18 meses (2026-11 → 2028-04). Todo coherente en P × Q.
+  - **4 anomalías de 2026-10, con su bitácora de justificación**:
+    - aceros de perforación por roca abrasiva: Q en `RACCT_ACEROS`;
+    - tarifa del xantato: P en `RACCT_REACTIVOS`;
+    - falla de revestimientos del molino SAG: horas extra en `RACCT_LABOR`;
+    - buques retrasados: impulsor del puerto en 0, con `RACCT_LABOR` y `RACCT_MANTEN` fijos.
 
   Todo dato nuevo debe pertenecer a un caso aprobado.
 
@@ -45,14 +49,14 @@ La deuda del punto 4 se consolida en [TECH_DEBT.md](TECH_DEBT.md) (ID, impacto, 
 | `debezium` / `debezium-init` | net, edge / net | 8083 | conector `cdc/connectors/s4hana-cdc.json` (PUT idempotente) |
 | `minio` / `minio-init` | net, edge / net | 9000, 9001 | buckets `lakehouse` (Delta) y `raw-docs` (originales versionados con metadatos Rcntr/Gjahr/Monat) |
 | `unity-catalog` | net, edge | 8081 | tablas `nodara.bronze.*` + volumen `nodara.raw.docs_<origen>` (H2 en volumen) |
-| `trino` | net, edge | 8080 | catálogos `lakehouse` (Delta: `bronze.*` + vistas `silver.*`) y `s4hana` (PostgreSQL, rol `trino_ro`) |
+| `trino` | net, edge | 8080 | catálogos `lakehouse` (Delta: `bronze.*` + vistas `silver.*` + vistas `gold.*` P × Q, publicadas por el backend) y `s4hana` (PostgreSQL, rol `trino_ro`) |
 | `delta-sink` | net | — | Kafka → Delta bronze; registra en Trino y UC y crea la vista silver (PK de la key Debezium) |
 | `vector-db` | kb, edge | 5433 | esquema `kb`; `chunks.gjahr/monat/rcntr` NOT NULL (Año/Mes/RCNTR); `documents.source_uri` → raw layer |
 | `ollama` | net | — | contingencia local + embeddings; sin egress; modelos solo vía `make models` (perfil `bootstrap`) |
 | `egress-proxy` | net, egress | — | squid: default deny, solo CONNECT 443 a `egress/allowlist.txt` (solo NVIDIA) |
 | `langfuse` / `langfuse-db` | net, obs, edge / obs | 3001 | Langfuse v2 autoalojado; proyecto `nodara-rollingf`, keys y admin headless desde `.env` |
-| `backend` | net, kb | — | no publicado; `GET /api/v1/opex/cost-centers`, `GET /api/v1/opex/timeline?rcntr=`, `POST /api/v1/ask {question, language: ES\|EN\|PT, engine: nim\|ollama, rcntr, period?}` |
-| `frontend` | net, edge | 3000 | única entrada; proxy `/api/*` → backend; selector de centro de costo, gráfico real + plan, KPIs, chat IA; UI ES/EN/PT |
+| `backend` | net, kb | — | no publicado; `GET /api/v1/opex/cost-centers`, `GET /api/v1/opex/timeline?rcntr=`, `GET /api/v1/opex/matrix`, `POST /api/v1/ask {question, language: ES\|EN\|PT, engine: nim\|ollama, rcntr, period?}` |
+| `frontend` | net, edge | 3000 | única entrada; proxy `/api/*` → backend; selector por área, KPIs, gráfico real + presupuesto + plan, matriz P × Q expandible, chat IA; UI ES/EN/PT |
 | `ui-test` | edge | — | perfil `qa`: Playwright contra el frontend (`make ui-test`) |
 
 Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes `nodara-rollingf/*`. Convive con
@@ -66,17 +70,30 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
   entregadas por el Arquitecto. `ACDOCP` no tiene `RVERS`: la versión del plan es `CATEGORY` (plan category): `BUDG`
   presupuesto base, la referencia de la desviación, y `RF18M` rolling forecast. Su clave es `REQTSN/DATAPAKID/RECORD`.
   `FINSSKF` (valores vigentes) se identifica por `STAGR/RECID/DATE_FROM`, con `RRCTY` (0 real, 1 plan) y `CATEGORY`;
-  `RECID` es el MD5 de RRCTY + CATEGORY + RBUKRS + RCNTR + STAGR (un ítem por centro de costo e impulsor). Un dato nuevo va en la tabla SAP real que lo contiene, nunca en columnas inventadas.
-  ACDOCA debe quedar cuadrado por `belnr` (Σ `wsl` = Σ `hsl` = Σ `ksl` = 0). Textos de datos maestros fuera de alcance
-  (SKAT, CSKT, TKA03, categorías) solo en `backend/app/masterdata.py`, junto con el impulsor del OPEX unitario de cada
-  centro de costo (`UNIT_DRIVERS`), los símbolos de unidad (`H` → h, `TO` → t, `WMT`) y el orden de la cadena de valor.
-- **La IA no calcula**: toda cifra (OPEX por cuenta, impulsores, OPEX unitario por impulsor en USD/h, USD/t o USD/WMT,
-  desviación real − `BUDG`, variación vs. mes anterior, plan) se calcula en
-  SQL de Trino (`backend/app/lakehouse.py`) sobre `lakehouse.silver.*`; Python y la UI solo formatean. Trino inlinea
+  `RECID` es el MD5 de RRCTY + CATEGORY + RBUKRS + RCNTR + STAGR (un ítem por centro de costo e impulsor). Un dato nuevo
+  va en la tabla SAP real que lo contiene, nunca en columnas inventadas.
+  - **P × Q** con los campos de las fichas, sin `RUOM` ni `MSL`/`RUNIT` en ACDOCP:
+    - ACDOCA lleva `MSL`/`RUNIT`;
+    - ACDOCP lleva `VMSL`/`RVUNIT`, el precio `KPRICE` y la parte fija `KFSL`/`VMFSL`, con `KSL = KPRICE × VMSL`;
+    - la vista gold los expone como `msl`/`ruom`.
+  - `RACCT` usa los IDs simbólicos del Arquitecto (`RACCT_ACEROS`…, `varchar(20)`).
+  - ACDOCA debe quedar cuadrado por `belnr` (Σ `wsl` = Σ `hsl` = Σ `ksl` = 0). `BLART`: WA bodega (semanal), WE
+    servicio, SA nómina, AF depreciación.
+  - Datos maestros fuera de alcance solo en `backend/app/masterdata.py`: textos (SKAT, CSKT, TKA03, unidades,
+    categorías), área de cada centro, impulsor del OPEX unitario (`UNIT_DRIVERS`) y decimales de presentación.
+- **La IA no calcula**: toda cifra se calcula en SQL de Trino (`backend/app/lakehouse.py`). Eso incluye:
+  - costo, cantidad, precio y consumo específico por RCNTR × RACCT;
+  - efectos P/Q/volumen/gasto y el ranking de efectos;
+  - OPEX unitario y plan.
+
+  El cálculo corre sobre las vistas gold `lakehouse.gold.vw_opex_c1_pxq` (master: una fila por versión, mes, RCNTR y
+  RACCT; nunca suma unidades distintas) y `vw_opex_c1_pxq_variance` (presupuesto flexible con `KFSL`/`VMFSL`). El
+  backend las publica en su primer análisis. Toda división usa `nullif` (un impulsor en 0 da NULL). Python y la UI
+  solo formatean. Trino inlinea
   los CTE en cada referencia: leer cada tabla silver pocas veces (límite de 150 stages). El control de cifras
   (`backend/app/figures.py`) reporta todo número de la respuesta que no venga de Trino, de las bitácoras o de la pregunta.
-- **Base de conocimiento**: originales en `knowledge/raw-docs/<origen>/<doc_id>.md` (orígenes `mantenimiento` y
-  `operaciones`; `doc_type` `maintenance_log` u `operations_log`), con `gjahr`, `monat` y `rcntr`
+- **Base de conocimiento**: bitácoras de justificación en `knowledge/raw-docs/<origen>/<doc_id>.md` (orígenes `mina`,
+  `concentradora` y `puerto`; `doc_type` `maintenance_log` u `operations_log`; varias secciones), con `gjahr`, `monat` y `rcntr`
   obligatorios en el front matter y una sección `##` por fragmento. `make kb-seed` regenera
   `init-scripts/vectordb/02-seed-docs.sql`, que **nunca se edita a mano**. La recuperación filtra primero por
   RCNTR + Año + Mes del período analizado y después ordena por similitud.
@@ -89,9 +106,11 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 - **i18n de la UI**: todo texto estático y todo metadato de la respuesta viven en `frontend/app/dictionaries.ts`, que
   también usa el servidor (cookie `nodara.language`). `i18n.tsx` solo contiene el contexto de React. Los diccionarios
   ES/EN están tipados contra PT, así que si falta una clave el build falla.
-- **Gráficos**: forma de énfasis (cuenta con el mayor sobrecosto material vs. `BUDG` en acento, resto en gris; sin
-  acento si ninguna cuenta se desvía), un solo eje por medida (nunca doble eje). Las medidas salen de los impulsores
-  del centro de costo (OPEX, USD/h, USD/t, USD/WMT). El presupuesto se dibuja como un tick de referencia neutro con
+- **Gráficos**: forma de énfasis: la cuenta de origen de la desviación (primer efecto del ranking de Trino) va en
+  acento si su sobrecosto vs. `BUDG` es material (≥ 5 %) y el resto en gris; sin acento si no hay cuenta de origen.
+  Un solo eje por medida (nunca doble eje): OPEX o el OPEX unitario del impulsor del centro (USD/m, USD/t, USD/m³,
+  USD/WMT). La matriz P × Q se despliega por centro de costo con un botón real (`aria-expanded`) y desplaza su tabla
+  dentro del panel. El presupuesto se dibuja como un tick de referencia neutro con
   halo de superficie. Tooltip por columna con teclado y vista de tabla. Colores validados con el validador de dataviz
   sobre la superficie `#0f172a`. Sin scroll horizontal en móvil: un `<select>` toma el ancho de su opción más larga,
   así que va con `w-full`.
@@ -117,11 +136,11 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 1. `make config` → compose válido.
 2. `make up` → sin colisiones (preflight) y todo `healthy` (lo espera `scripts/wait-healthy.sh`).
 3. `make smoke` → **0 fallos**. Primero re-siembra (`make fresh`, borra los datos). Incluye:
-   - el modelo financiero (categorías `BUDG` + `RF18M`) y los 5 casos de la cadena de valor;
-   - CDC → bronze → silver;
-   - OPEX unitario y desviación vs. `BUDG` idénticos en Trino y PostgreSQL;
-   - la IA en ES/EN/PT con NIM (CAEX) y la pregunta del OPEX unitario del puerto, más la contingencia Ollama, si los
-     modelos están importados;
+   - el modelo financiero con los campos P × Q reales y los 12 centros con sus 4 anomalías;
+   - CDC → bronze → silver → gold (`vw_opex_c1_pxq`: una fila por RCNTR × RACCT, sin división por cero);
+   - efectos P/Q/volumen/gasto y OPEX unitario idénticos en Trino y PostgreSQL;
+   - la IA nombrando la cuenta y el efecto de origen en ES/EN/PT con NIM, más la contingencia Ollama, si los modelos
+     están importados;
    - las trazas de Langfuse, el tiempo real y el egress.
 4. Si se tocó el frontend: `make ui-test` en verde.
 5. README, este archivo y `TECH_DEBT.md` actualizados.
@@ -133,7 +152,7 @@ Proyecto compose `nodara-rollingf`: contenedores y redes `rollingf-*`, imágenes
 `make embed` · `make kb-seed` · `make simulate n=10` · `make reset-data` · `make down` · `make clean` (borra todos
 los volúmenes, incluidos los modelos)
 
-`./scripts/smoke-test.sh` sin reset sirve solo para diagnóstico: el simulador contabiliza repuestos en ACDOCA.
+`./scripts/smoke-test.sh` sin reset sirve solo para diagnóstico: el simulador contabiliza diésel en ACDOCA.
 
 ## Problemas conocidos (entorno WSL + Docker Desktop)
 
@@ -158,9 +177,16 @@ los volúmenes, incluidos los modelos)
   - `meta-llama/llama-3.3-70b-instruct` es nomenclatura de Hugging Face, no un ID de NVIDIA: da 404.
   - Los 70B listados para la cuenta (Nemotron 70B, Palmyra Fin 70B), Nemotron 51B y Ultra 253B dan 404 *Not found
     for account*; Llama 3.2 90B Vision no respondió en 90 s.
-  - Un modelo listado en `/v1/models` puede igual no responder: probarlo con una llamada real.
+  - Un modelo listado en `/v1/models` puede igual no responder: probarlo con una llamada real (se volvió a probar en
+    la release de producción: sigue sin Llama 3.3 70B).
 - gpt-oss en NIM separa los miles con espacio fino (`4 207 000`): el control de cifras lo admite.
 - `Intl.NumberFormat("es")` no agrupa los números de 4 cifras: la UI muestra `7640 h` y el LLM recibe `7.640 h`.
+- Trino: `format('%.2f', NULL)` devuelve `"nu"` (Java aplica la precisión al texto "null"), no NULL; usar
+  `if(x IS NULL, …)`. Las vistas gold no existen hasta el primer análisis del backend (lo dispara cualquier llamada a
+  `/api/opex/*`).
+- PostgreSQL resuelve `round(integer)` como `round(double precision)`: castear a `numeric` antes de `round(x, n)`.
+- Las fichas de tabla del Arquitecto son PDF escaneados (imágenes): para leerlas, renderizar las páginas a PNG
+  (`pdftoppm` en un contenedor `alpine` desechable) y abrirlas como imagen.
 - Langfuse 2.x (Next.js) escucha en la IP del contenedor salvo con `HOSTNAME=0.0.0.0` (sin eso, el healthcheck falla).
 - `ChatNVIDIA` no tiene timeout de red: el límite `NIM_TIMEOUT_S` lo aplica `backend/app/llm.py` con un hilo por intento.
 - Copiar el proyecto con el Explorador de Windows deja archivos `*:Zone.Identifier` (están en `.gitignore`).

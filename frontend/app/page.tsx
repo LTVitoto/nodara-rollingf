@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { ChatPanel } from "./components/ChatPanel";
-import { ForecastChart, OPEX, type Measure } from "./components/ForecastChart";
+import { ForecastChart, OPEX, UNIT, type Measure } from "./components/ForecastChart";
 import { Header, nimConfigured, type Status } from "./components/Header";
 import { KpiTiles } from "./components/KpiTiles";
+import { MatrixC1 } from "./components/MatrixC1";
 import { useI18n, type Engine } from "./i18n";
 import type { CostCenter, Timeline } from "./types";
 
@@ -98,23 +99,37 @@ export default function Home() {
     };
   }, [rcntr]);
 
-  // The cost element that drives the deviation vs budget of the analyzed month gets the accent hue
-  // (none when no account overruns its budget materially, e.g. fixed costs on budget).
+  // The account that originates the deviation (first of Trino's ranking of unfavorable effects) gets the
+  // accent hue when its overrun vs budget is material; none otherwise (e.g. fixed costs on budget).
   const emphasis = useMemo(() => {
-    const overruns = (timeline?.summary?.accounts ?? []).filter((a) => (a.delta_budget_pct ?? 0) >= EMPHASIS_MIN_PCT);
-    return overruns.reduce<(typeof overruns)[number] | undefined>(
-      (best, account) => ((account.delta_budget ?? -Infinity) > (best?.delta_budget ?? -Infinity) ? account : best),
-      undefined,
-    )?.racct ?? null;
+    const summary = timeline?.summary;
+    const origin = summary?.origins[0];
+    const line = summary?.lines.find((l) => l.racct === origin?.racct);
+    return line && (line.variance_pct ?? 0) >= EMPHASIS_MIN_PCT ? line.racct : null;
   }, [timeline]);
 
-  // OPEX plus the unit OPEX of every driver of the cost center; a measure the selected cost center does
-  // not have falls back to OPEX.
+  // OPEX or the unit OPEX of the cost center driver (USD/m, USD/t, USD/m³, USD/WMT).
   const measures: { id: Measure; label: string }[] = [
     { id: OPEX, label: t.controls.opex },
-    ...(timeline?.drivers ?? []).map((d) => ({ id: d.stagr, label: `USD/${d.symbol}` })),
+    ...(timeline?.driver ? [{ id: UNIT, label: `USD/${timeline.driver.symbol}` }] : []),
   ];
   const shown = measures.some((option) => option.id === measure) ? measure : OPEX;
+
+  // Cost centers grouped by value-chain area (selector option groups), in value-chain order.
+  const areas = useMemo(() => {
+    const groups: { area: string; label: string; centers: CostCenter[] }[] = [];
+    for (const center of centers) {
+      const group = groups.find((g) => g.area === center.area);
+      if (group) group.centers.push(center);
+      else groups.push({ area: center.area, label: center.area_texts[language], centers: [center] });
+    }
+    return groups;
+  }, [centers, language]);
+
+  function analyze(next: string) {
+    setRcntr(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   function setEngine(next: Engine) {
     setEngineState(next);
@@ -138,10 +153,14 @@ export default function Home() {
             onChange={(e) => setRcntr(e.target.value)}
             className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-sky-500 sm:min-w-72"
           >
-            {centers.map((center) => (
-              <option key={center.rcntr} value={center.rcntr}>
-                {center.rcntr} · {center.texts[language]}
-              </option>
+            {areas.map((group) => (
+              <optgroup key={group.area} label={group.label}>
+                {group.centers.map((center) => (
+                  <option key={center.rcntr} value={center.rcntr}>
+                    {center.rcntr} · {center.texts[language]}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -189,6 +208,8 @@ export default function Home() {
           {timeline ? <ForecastChart timeline={timeline} measure={shown} emphasis={emphasis} /> : null}
         </div>
       </section>
+
+      <MatrixC1 selected={rcntr} onAnalyze={analyze} />
 
       <ChatPanel rcntr={rcntr} engine={engine} onEngineChange={setEngine} nimAvailable={nimAvailable} />
     </main>

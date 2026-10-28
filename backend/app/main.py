@@ -104,11 +104,20 @@ def cost_centers(language: str = "es") -> dict:
 def timeline(rcntr: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,20}$")] = None,
              category: Annotated[str | None, Query(pattern=r"^[A-Z0-9_]{1,10}$")] = None,
              language: str = "es") -> dict:
-    """Continuous monthly OPEX: actuals (ACDOCA) against the budget (ACDOCP · BUDG) + plan (ACDOCP), drivers
-    and unit OPEX computed by Trino, with the deviation summary (actual - budget) of the latest actual month."""
+    """Continuous monthly OPEX per account: actuals (ACDOCA) against the budget (ACDOCP · BUDG) + plan (ACDOCP),
+    driver and unit OPEX computed by Trino, with the P x Q deviation summary of the latest actual month."""
     with localized(normalize_language(language), rcntr):
         center, plan_category = opex.scope(rcntr, category)
         return opex.timeline(center, plan_category)
+
+
+@app.get("/api/v1/opex/matrix")
+def matrix(period: Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] = None,
+           language: str = "es") -> dict:
+    """OPEX C1 P x Q matrix of the latest actual month (or the requested one): every cost center with its
+    accounts — quantity, price, specific consumption and price / efficiency / volume effects vs budget."""
+    with localized(normalize_language(language), period=period):
+        return opex.matrix(period)
 
 
 @app.post("/api/v1/kb/embed", response_model=EmbedResponse)

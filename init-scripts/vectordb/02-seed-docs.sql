@@ -3,24 +3,104 @@
 -- Embeddings stay NULL until the backend runs POST /api/v1/kb/embed (make embed).
 
 INSERT INTO kb.documents (doc_id, title, doc_type, author_role, site, language, classification, source_uri) VALUES
-    ('BIT-MANT-CAEX-2026-10', 'Bitácora del Jefe de Mantenimiento · Flota CAEX · octubre 2026', 'maintenance_log', 'Jefe de Mantenimiento Mina', 'Mina rajo abierto · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/mantenimiento/BIT-MANT-CAEX-2026-10.md'),
-    ('BIT-MANT-SXEW-2026-10', 'Bitácora del Jefe de Mantenimiento · Planta de Lixiviación SX-EW · octubre 2026', 'maintenance_log', 'Jefe de Mantenimiento Planta SX-EW', 'Planta de Lixiviación SX-EW · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/mantenimiento/BIT-MANT-SXEW-2026-10.md'),
-    ('BIT-OPER-FLOT-2026-10', 'Bitácora del Jefe de Metalurgia · Planta Concentradora · octubre 2026', 'operations_log', 'Jefe de Metalurgia Planta Concentradora', 'Planta Concentradora · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/operaciones/BIT-OPER-FLOT-2026-10.md'),
-    ('BIT-OPER-MINA-2026-10', 'Bitácora del Jefe de Operaciones Mina · Extracción · octubre 2026', 'operations_log', 'Jefe de Operaciones Mina', 'Mina rajo abierto · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/operaciones/BIT-OPER-MINA-2026-10.md'),
-    ('BIT-OPER-PUERTO-2026-10', 'Bitácora del Jefe de Operaciones Portuarias · Embarque · octubre 2026', 'operations_log', 'Jefe de Operaciones Portuarias', 'Puerto de embarque · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/operaciones/BIT-OPER-PUERTO-2026-10.md');
+    ('BIT-FLOT-2026-10', 'Bitácora de justificación · Flotación · alza de tarifa del xantato · octubre 2026', 'operations_log', 'Superintendente de Flotación', 'Planta Concentradora · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/concentradora/BIT-FLOT-2026-10.md'),
+    ('BIT-MOLI-2026-10', 'Bitácora de justificación · Molienda · falla de revestimientos del molino SAG · octubre 2026', 'maintenance_log', 'Jefe de Mantenimiento Planta Concentradora', 'Planta Concentradora · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/concentradora/BIT-MOLI-2026-10.md'),
+    ('BIT-PERF-2026-10', 'Bitácora de justificación · Perforación · desgaste prematuro de aceros · octubre 2026', 'operations_log', 'Jefe de Perforación y Tronadura', 'Mina rajo abierto · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/mina/BIT-PERF-2026-10.md'),
+    ('BIT-EMBA-2026-10', 'Bitácora de justificación · Embarque · retraso de buques · octubre 2026', 'operations_log', 'Jefe de Operaciones Portuarias', 'Puerto de embarque · Nodara Minería Chile (CL01)', 'es', 'SYNTHETIC-SIMULATION', 's3://raw-docs/puerto/BIT-EMBA-2026-10.md');
 
 INSERT INTO kb.chunks (doc_id, chunk_no, section, gjahr, monat, rcntr, content) VALUES
-('BIT-MANT-CAEX-2026-10', 1, 'Parada no programada de la flota CAEX', 2026, 10, 'RCNTR_MINA_CAEX',
-$md$Parada no programada de 3 camiones Komatsu por falla prematura de inyectores debido a contaminación de diésel, reduciendo horas operativas e incrementando gasto en repuestos.$md$),
+('BIT-FLOT-2026-10', 1, 'Evento: nueva tarifa del proveedor de xantato', 2026, 10, 'RCNTR_CON_FLOT',
+$md$El proveedor del colector xantato isopropílico de sodio (SIPX) aplicó desde el 1 de octubre la cláusula de
+reajuste del contrato por el alza de sus materias primas (disulfuro de carbono e isopropanol) y del flete
+marítimo. La tarifa pasó de USD 3,18 por kilo a USD 4,05 por kilo, un alza de 27,4 %. Abastecimiento validó el
+reajuste contra el índice pactado; no hubo compras de emergencia ni cambio de producto.$md$),
 
-('BIT-MANT-SXEW-2026-10', 1, 'Falla de la bomba principal de ácido sulfúrico', 2026, 10, 'RCNTR_LIXIV_SXEW',
-$md$Falla catastrófica en bomba de ácido sulfúrico principal detuvo el riego de la pila por 48 horas, desplomando las toneladas procesadas. Los costos fijos se mantuvieron.$md$),
+('BIT-FLOT-2026-10', 2, 'Insumo afectado: RACCT_REACTIVOS (efecto precio P)', 2026, 10, 'RCNTR_CON_FLOT',
+$md$La dosificación del colector se mantuvo en el estándar metalúrgico de 23,5 gramos por tonelada (23,3 g/t
+medidos en el mes), sin pérdida de recuperación. Por eso la desviación de la cuenta RACCT_REACTIVOS es un efecto
+precio puro: se usó la cantidad esperada para el mineral tratado, pero cada kilo costó más. No hay efecto de
+eficiencia en el consumo de xantato.$md$),
 
-('BIT-OPER-FLOT-2026-10', 1, 'Caída de ley y dosificación de colector', 2026, 10, 'RCNTR_CONCEN_FLOT',
-$md$Caída abrupta en la ley del mineral obligó a incrementar la dosificación de colector Xantato a 15 g/ton para mantener la recuperación metalúrgica, disparando el OPEX de reactivos.$md$),
+('BIT-FLOT-2026-10', 3, 'Contexto del mes: menor tratamiento por la detención del molino SAG', 2026, 10, 'RCNTR_CON_FLOT',
+$md$La flotación trató 2.821.000 toneladas, 9 % menos que el plan, porque el molino SAG estuvo detenido por la
+falla de revestimientos (ver la bitácora de Molienda). Ese menor tratamiento reduce el consumo total de cal,
+energía y xantato (efecto volumen favorable), pero no compensa el mayor precio unitario del xantato. La cal y
+la energía se consumieron en línea con su estándar por tonelada.$md$),
 
-('BIT-OPER-MINA-2026-10', 1, 'Inundación estacional en el fondo del rajo', 2026, 10, 'RCNTR_MINA_TRUCK',
-$md$Inundación estacional en el fondo del rajo redujo el ritmo de extracción en 15% e incrementó el consumo de diésel por uso intensivo de motobombas de achique.$md$),
+('BIT-FLOT-2026-10', 4, 'Acciones y proyección', 2026, 10, 'RCNTR_CON_FLOT',
+$md$Abastecimiento abrió una licitación con un segundo proveedor calificado; el resultado se espera para el primer
+trimestre de 2027. Mientras tanto, el rolling forecast a 18 meses incorpora la nueva tarifa de USD 4,05 por kilo
+en todo el horizonte, por lo que el efecto precio del xantato es permanente hasta que se adjudique un contrato
+nuevo.$md$),
 
-('BIT-OPER-PUERTO-2026-10', 1, 'Cierre del puerto por marejadas', 2026, 10, 'RCNTR_PUERTO_EMB',
-$md$Fuertes marejadas impidieron el atraque de buques durante 5 días. Las toneladas embarcadas cayeron a cero, pero los costos fijos de puerto se mantuvieron, disparando el OPEX unitario.$md$);
+('BIT-MOLI-2026-10', 1, 'Evento: falla de revestimientos del molino SAG', 2026, 10, 'RCNTR_CON_MOLI',
+$md$El 9 de octubre se desprendieron placas y lifters del revestimiento del extremo de descarga del molino SAG por
+falla de pernos de fijación. El molino estuvo detenido 58 horas para el cambio de emergencia de los
+revestimientos. Por la detención y la rampa de arranque, la molienda procesó 2.821.000 toneladas, 9 % menos que
+las 3.100.000 toneladas del plan.$md$),
+
+('BIT-MOLI-2026-10', 2, 'Insumo afectado: RACCT_LABOR (horas extra)', 2026, 10, 'RCNTR_CON_MOLI',
+$md$El cambio de emergencia se hizo con cuadrillas propias en turnos extendidos. Las horas hombre del mes llegaron
+a 8.599, frente a 6.231 planificadas: 2.368 horas adicionales (+38 %). Esas horas se pagaron con recargo de
+sobretiempo, por lo que la tarifa promedio subió de USD 36,20 a USD 39,64 por hora hombre. La desviación de
+RACCT_LABOR combina un efecto de eficiencia (más horas por tonelada molida, el componente principal) y un efecto
+precio (el recargo de las horas extra).$md$),
+
+('BIT-MOLI-2026-10', 3, 'Insumos no afectados: revestimientos, energía y bolas', 2026, 10, 'RCNTR_CON_MOLI',
+$md$Para el cambio se usó el juego de revestimientos previsto para la campaña de noviembre, por lo que el consumo
+de revestimientos por tonelada se mantuvo en el estándar de 0,058 kg/t. La energía y las bolas de molienda
+bajaron junto con el tratamiento (efecto volumen favorable) y su consumo por tonelada quedó en línea con el
+plan. La mantención contratada no cambió.$md$),
+
+('BIT-MOLI-2026-10', 4, 'Acciones y proyección', 2026, 10, 'RCNTR_CON_MOLI',
+$md$Se inició un análisis de causa raíz del diseño de pernos con el fabricante y se aumentó la frecuencia de
+inspección del revestimiento. El rolling forecast considera una rampa de 98,5 % del tratamiento en noviembre y
+la vuelta a la dotación normal de horas hombre desde noviembre.$md$),
+
+('BIT-PERF-2026-10', 1, 'Evento: roca abrasiva en la fase 7', 2026, 10, 'RCNTR_MIN_PERF',
+$md$Desde el 3 de octubre la flota de perforadoras opera en los bancos inferiores de la fase 7, donde el modelo
+geotécnico confirmó pórfido silicificado con alto contenido de cuarzo. El índice de abrasividad Cerchar medido
+en terreno fue 4,2, frente a 2,8 en los bancos perforados hasta septiembre. La roca es más abrasiva pero no más
+dura: la velocidad de penetración se mantuvo dentro del rango normal de la flota.$md$),
+
+('BIT-PERF-2026-10', 2, 'Insumo afectado: RACCT_ACEROS (efecto eficiencia Q)', 2026, 10, 'RCNTR_MIN_PERF',
+$md$La vida útil promedio de las brocas tricónicas de 10 5/8 pulgadas cayó de 2.400 metros (estándar del
+presupuesto) a cerca de 1.550 metros por broca. En octubre se consumieron 94 brocas, frente a 62 presupuestadas.
+El precio unitario no cambió: el contrato con el proveedor mantiene USD 10.850 por broca. La desviación de la
+cuenta RACCT_ACEROS es, por lo tanto, un efecto de eficiencia (más piezas por metro perforado) y no un efecto
+precio.$md$),
+
+('BIT-PERF-2026-10', 3, 'Insumos no afectados: diésel, mano de obra y mantención', 2026, 10, 'RCNTR_MIN_PERF',
+$md$El consumo de diésel por metro se mantuvo en línea con el plan (2,66 L/m frente a 2,65 L/m), porque el
+desgaste afecta la vida del acero y no el rendimiento de las perforadoras. RACCT_DIESEL no explica la
+desviación del mes. Las horas hombre de operación y las horas de mantención contratada se mantuvieron en la
+dotación habitual; sus variaciones son menores y corresponden a la operación normal.$md$),
+
+('BIT-PERF-2026-10', 4, 'Acciones y proyección', 2026, 10, 'RCNTR_MIN_PERF',
+$md$Desde noviembre se usarán brocas con insertos de carburo de tungsteno para roca abrasiva, en prueba en dos
+perforadoras. Planificación Mina estima que la flota seguirá en la zona abrasiva hasta febrero de 2027, por lo
+que el rolling forecast mantiene un consumo de aceros superior al presupuesto en los próximos cuatro meses
+(+40 %, +25 %, +12 % y +5 % sobre el estándar) antes de volver a 2.400 metros por broca.$md$),
+
+('BIT-EMBA-2026-10', 1, 'Evento: ningún buque atracó en octubre', 2026, 10, 'RCNTR_PTO_EMBA',
+$md$Los dos buques programados para octubre se retrasaron por congestión en su puerto de carga anterior y por
+marejadas en la bahía, y ninguno alcanzó a atracar dentro del mes. Las toneladas embarcadas fueron cero, frente
+a 102.300 toneladas húmedas (WMT) del plan. El concentrado filtrado del mes, 91.259 WMT, quedó acopiado en la
+cancha del puerto.$md$),
+
+('BIT-EMBA-2026-10', 2, 'Costos fijos que se mantuvieron: RACCT_LABOR y RACCT_MANTEN', 2026, 10, 'RCNTR_PTO_EMBA',
+$md$Las cuadrillas de estiba y los contratistas de mantención del muelle trabajan con turnos y contratos fijos, por
+lo que sus horas y tarifas no cambiaron: 6.014 horas hombre de estiba (RACCT_LABOR) y 1.395 horas de mantención
+(RACCT_MANTEN). El arriendo de la cancha de concentrado (USD 521.000) y la depreciación del muelle también
+siguieron sin cambios. Estas cuentas no tienen efecto precio ni de eficiencia: su gasto es el del presupuesto.$md$),
+
+('BIT-EMBA-2026-10', 3, 'Efecto en el costo unitario', 2026, 10, 'RCNTR_PTO_EMBA',
+$md$La única cuenta que bajó fue la energía de correas y del cargador de barcos, que quedó en su consumo base de
+46.500 kWh (iluminación y equipos en espera). Con cero toneladas embarcadas, el costo por WMT del mes no se
+puede calcular: todo el costo fijo del puerto quedó sin absorber por toneladas. La desviación del mes es de
+volumen (impulsor TONEMB en cero), no de precio ni de eficiencia de los insumos.$md$),
+
+('BIT-EMBA-2026-10', 4, 'Acciones y proyección', 2026, 10, 'RCNTR_PTO_EMBA',
+$md$Los buques se reprogramaron entre noviembre y febrero. El rolling forecast embarca el concentrado acopiado con
+volúmenes sobre el plan de +45 %, +30 %, +15 % y +5 % en esos cuatro meses, lo que baja el costo por WMT por
+debajo del presupuesto mientras se recupera el atraso.$md$);

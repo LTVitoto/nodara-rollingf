@@ -1,58 +1,32 @@
 "use client";
 
-// Evidence behind an answer: the deterministic variance computed by Trino (actual vs base budget, with the
-// previous month as context) and the operational logs retrieved from pgvector with their mandatory
-// metadata (Año, Mes, RCNTR).
-import { formatMonth, formatNumber, formatPercent } from "../format";
+// Evidence behind an answer: the deterministic P x Q calculation of Trino for the analyzed month (every
+// account against the budget, with the origin of the deviation) and the operational logs retrieved from
+// pgvector with their mandatory metadata (Año, Mes, RCNTR).
+import { formatMonth, formatNumber } from "../format";
 import { useI18n } from "../i18n";
-import type { Analysis, Metric, Source } from "../types";
-
-function Row({ label, metric, digits }: { label: string; metric: Metric; digits: number }) {
-  const { t } = useI18n();
-  const n = (value: number | null) => formatNumber(value, t.locale, digits);
-  return (
-    <tr className="border-b border-slate-900">
-      <td className="py-1 pr-3 text-left text-slate-300">{label}</td>
-      <td className="py-1 pr-3 font-semibold text-slate-50">{n(metric.current)}</td>
-      <td className="py-1 pr-3">{n(metric.budget)}</td>
-      <td className="py-1 pr-3">{formatPercent(metric.delta_budget_pct, t.locale)}</td>
-      <td className="py-1 pr-3">{n(metric.previous)}</td>
-      <td className="py-1 pr-3">{formatPercent(metric.delta_previous_pct, t.locale)}</td>
-      <td className="py-1">{metric.share_pct === null ? "" : `${formatNumber(metric.share_pct, t.locale, 1)} %`}</td>
-    </tr>
-  );
-}
+import type { Analysis, Source } from "../types";
+import { PxqTable } from "./PxqTable";
 
 export function AnalysisTable({ analysis }: { analysis: Analysis }) {
-  const { language, t } = useI18n();
+  const { t } = useI18n();
+  const origin = analysis.origins[0] ?? null;
   return (
-    <div data-testid="analysis-table" className="overflow-x-auto">
+    <div data-testid="analysis-table">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-sky-400">{t.analysis.title}</h3>
-      <table className="mt-2 w-full text-right text-xs tabular-nums text-slate-200">
-        <thead className="text-slate-400">
-          <tr className="border-b border-slate-800">
-            <th className="py-1 pr-3 text-left font-medium">{t.analysis.metric}</th>
-            <th className="py-1 pr-3 font-medium">{formatMonth(analysis.period, t.locale)}</th>
-            <th className="py-1 pr-3 font-medium">{t.analysis.budget} ({analysis.budget_category})</th>
-            <th className="py-1 pr-3 font-medium">Δ</th>
-            <th className="py-1 pr-3 font-medium">{t.analysis.previous}</th>
-            <th className="py-1 pr-3 font-medium">Δ</th>
-            <th className="py-1 font-medium">{t.analysis.share}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {analysis.opex ? <Row label={t.analysis.opex} metric={analysis.opex} digits={0} /> : null}
-          {analysis.drivers.map((driver) => (
-            <Row key={driver.stagr} label={`${driver.texts[language]} (${driver.symbol})`} metric={driver} digits={0} />
-          ))}
-          {analysis.unit_costs.map((unit) => (
-            <Row key={`unit-${unit.stagr}`} label={t.analysis.unit(unit.symbol)} metric={unit} digits={unit.decimals} />
-          ))}
-          {analysis.accounts.map((account) => (
-            <Row key={account.racct} label={`${account.racct} ${account.texts[language]}`} metric={account} digits={0} />
-          ))}
-        </tbody>
-      </table>
+      <p className="mt-1 text-[11px] text-slate-400">
+        {analysis.rcntr} · {formatMonth(analysis.period, t.locale)} · {t.analysis.origin}:{" "}
+        {origin ? (
+          <span data-testid="analysis-origin" className="text-slate-200">
+            {origin.racct} · {t.matrix.effectNames[origin.effect]} {formatNumber(origin.amount, t.locale, 0, true)}
+          </span>
+        ) : (
+          t.matrix.noOrigin
+        )}
+      </p>
+      <div className="mt-2">
+        <PxqTable lines={analysis.lines} driver={analysis.driver} origin={origin} testId="analysis-pxq" />
+      </div>
     </div>
   );
 }
